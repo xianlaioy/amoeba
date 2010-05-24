@@ -21,28 +21,31 @@ import com.meidusa.amoeba.mysql.net.packet.ErrorPacket;
 import com.meidusa.amoeba.mysql.net.packet.HandshakePacket;
 import com.meidusa.amoeba.mysql.net.packet.OkPacket;
 import com.meidusa.amoeba.net.AuthResponseData;
+import com.meidusa.amoeba.net.AuthingableConnectionManager;
 import com.meidusa.amoeba.net.Connection;
-import com.meidusa.amoeba.net.ServerableConnectionManager;
 import com.meidusa.amoeba.util.StringUtil;
 
 /**
  * @author <a href=mailto:piratebase@sina.com>Struct chen</a>
  */
-public class MysqlClientConnectionManager extends ServerableConnectionManager {
-
+public class MysqlClientConnectionManager extends AuthingableConnectionManager {
+	
     private final static String SERVER_VERSION = "5.1.22-mysql-amoeba-proxy";
-
-    private static byte[]       authenticateOkPacketData;
+    private static byte[] AUTHENTICATEOKPACKETDATA;
+    static {
+            OkPacket ok = new OkPacket();
+            ok.packetId = 2;
+            ok.affectedRows = 0;
+            ok.insertId = 0;
+            ok.serverStatus = 2;
+            ok.warningCount = 0;
+            AUTHENTICATEOKPACKETDATA = ok.toByteBuffer(null).array();
+    }
 
     public MysqlClientConnectionManager() throws IOException{
     }
-
-    public MysqlClientConnectionManager(String name, int port) throws IOException{
-        super(name, port);
-    }
-
-    public MysqlClientConnectionManager(String name, String ipAddress, int port) throws IOException{
-        super(name, ipAddress, port);
+    public MysqlClientConnectionManager(String name) throws IOException{
+        super(name);
     }
 
     /**
@@ -69,17 +72,11 @@ public class MysqlClientConnectionManager extends ServerableConnectionManager {
 
     public void connectionAuthenticateSuccess(Connection conn, AuthResponseData data) {
         super.connectionAuthenticateSuccess(conn, data);
-        if (authenticateOkPacketData == null) {
-            OkPacket ok = new OkPacket();
-            ok.packetId = 2;
-            ok.affectedRows = 0;
-            ok.insertId = 0;
-            ok.serverStatus = 2;
-            ok.warningCount = 0;
-            authenticateOkPacketData = ok.toByteBuffer(conn).array();
-        }
+        
         conn.setMessageHandler(new MySqlCommandDispatcher());
-        conn.postMessage(authenticateOkPacketData);
+        conn.postMessage(AUTHENTICATEOKPACKETDATA);
+        MysqlClientConnection aconn = (MysqlClientConnection) conn;
+        aconn.afterAuth();
     }
 
     protected void connectionAuthenticateFaild(final Connection conn, AuthResponseData data) {
@@ -91,6 +88,8 @@ public class MysqlClientConnectionManager extends ServerableConnectionManager {
         error.sqlstate = "42S02";
         error.errno = 1000;
         conn.postMessage(error.toByteBuffer(conn).array());
+        MysqlClientConnection aconn = (MysqlClientConnection) conn;
+        aconn.afterAuth();
     }
 
 }

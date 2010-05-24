@@ -31,12 +31,15 @@ import com.meidusa.amoeba.mysql.net.packet.PreparedStatmentClosePacket;
 import com.meidusa.amoeba.mysql.net.packet.QueryCommandPacket;
 import com.meidusa.amoeba.net.Connection;
 import com.meidusa.amoeba.net.poolable.ObjectPool;
+import com.meidusa.amoeba.parser.statement.Statement;
 
 /**
  * @author <a href=mailto:piratebase@sina.com>Struct chen</a>
  */
 public class PreparedStatmentMessageHandler extends QueryCommandMessageHandler {
-
+	
+	private List<byte[]> preparedStatmentBytes = new ArrayList<byte[]>();
+	private Map<Connection,List<byte[]>> preparedMap = new HashMap<Connection,List<byte[]>>();
     static class PreparedStatmentSessionStatus extends SessionStatus {
 
         public static final int PREPAED_PARAMETER_EOF = 2048;
@@ -124,11 +127,13 @@ public class PreparedStatmentMessageHandler extends QueryCommandMessageHandler {
     protected PreparedStatmentInfo preparedStatmentInfo = null;
     /** 当前的请求数据包 */
     private Map<Connection, Long>  statmentIdMap        = Collections.synchronizedMap(new HashMap<Connection, Long>());
+	private boolean isExecute;
 
-    public PreparedStatmentMessageHandler(MysqlClientConnection source, PreparedStatmentInfo preparedStatmentInfo,
-                                          byte[] query, ObjectPool[] pools, long timeout){
-        super(source, query, pools, timeout);
+    public PreparedStatmentMessageHandler(MysqlClientConnection source, PreparedStatmentInfo preparedStatmentInfo,Statement statment,
+                                          byte[] query, ObjectPool[] pools, long timeout,boolean isExecute){
+        super(source, query,statment, pools, timeout);
         this.preparedStatmentInfo = preparedStatmentInfo;
+        this.isExecute = isExecute;
     }
 
     protected void afterCommandCompleted(CommandInfo currentCommand) {
@@ -157,6 +162,22 @@ public class PreparedStatmentMessageHandler extends QueryCommandMessageHandler {
         }
     }
 
+    protected void dispatchMessageFrom(Connection fromConn,byte[] message){
+    	if(fromConn != source){
+    		if (commandType == QueryCommandPacket.COM_STMT_PREPARE) {
+    			if(!isExecute){
+    				if(MysqlPacketBuffer.isOkPacket(message)){
+            			OKforPreparedStatementPacket ok = new OKforPreparedStatementPacket(); 
+            			ok.init(message,fromConn);
+            			ok.statementHandlerId = preparedStatmentInfo.getStatmentId();
+            			message = ok.toByteBuffer(fromConn).array();
+            		}
+    				preparedStatmentInfo.addPacket(message);
+    			}
+    		}
+    	}
+    	super.dispatchMessageFrom(fromConn, message);
+    }
     /**
      * 替换相应的 prepared Statment id，保存相应的数据包,并且填充 preparedStatmentInfo 的一些信息
      */
@@ -169,7 +190,20 @@ public class PreparedStatmentMessageHandler extends QueryCommandMessageHandler {
                  * ok.statementHandlerId = preparedStatmentInfo.getStatmentId(); preparedStatmentInfo.setOkPrepared(ok);
                  * message = ok.toByteBuffer(toConn).array(); }
                  */
-                return;
+            	//source.get
+            	/*if(!isExecute){
+            		preparedStatmentBytes.add(message);
+            	}*/
+            	if(isExecute){
+            		return;
+            	}else{
+            		if(MysqlPacketBuffer.isOkPacket(message)){
+            			OKforPreparedStatementPacket ok = new OKforPreparedStatementPacket(); 
+            			ok.init(message,toConn);
+            			ok.statementHandlerId = preparedStatmentInfo.getStatmentId();
+            			message = ok.toByteBuffer(toConn).array();
+            		}
+            	}
             }
         } else {
             if (commandType == CommandPacket.COM_STMT_EXECUTE || commandType == CommandPacket.COM_STMT_SEND_LONG_DATA || commandType == CommandPacket.COM_STMT_CLOSE) {
@@ -209,4 +243,7 @@ public class PreparedStatmentMessageHandler extends QueryCommandMessageHandler {
         return new PreparedStatmentConnectionStatuts(conn, this.preparedStatmentInfo);
     }
 
+    public List<byte[]> getPreparedStatmentBytes(){
+    	return this.preparedStatmentBytes;
+    }
 }

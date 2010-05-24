@@ -1,20 +1,18 @@
 package com.meidusa.amoeba.mysql.test.jdbc;
 
 import java.sql.Connection;
-import java.sql.Date;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.Properties;
 
 public class PreparedStatmentTest {
-
     /**
      * @param args
      * @throws Exception
      */
     public static void main(String[] args) throws Exception {
-
+    	
         Properties props = new Properties();
 
         // 启用failover 故障恢复功能
@@ -29,43 +27,59 @@ public class PreparedStatmentTest {
         Connection conn = null;
         PreparedStatement statment = null;
         ResultSet result = null;
-        conn = DriverManager.getConnection("jdbc:mysql://127.0.0.1:3306/test?useUnicode=true&characterEncoding=gbk", "blog", "blog");
+        
+        conn = DriverManager.getConnection("jdbc:mysql://127.0.0.1:8066/test?useUnicode=true&characterEncoding=utf-8&useServerPrepStmts=true", "sdfriend", "sdfriend");
         try {
-            statment = conn.prepareStatement("insert into t_qa_question set question_Id=?, title=?, content=?, extend_content=?, category=?, ask_time=?, finish_time=?, user_id=?," + "offer_score=?, had_append=?, append_score=?, total_score=?, total_gold=?, dead_line=?, is_urgent=?, best_answer=?, anonymous=?, state=?,flowers=?, eggs=?, click=?");
-            statment.setString(1, "hello admoeba");
-            statment.setString(2, "阿瑟多幅");
-            statment.setString(3, "asdfqwerqwer阿瑟多幅第三方");
-            statment.setString(4, "11111111111111111qwerqwer阿瑟多幅第三方");
-            // category
-            statment.setInt(5, 11);
-            statment.setDate(6, new Date(System.currentTimeMillis()));
-            statment.setDate(7, new Date(System.currentTimeMillis()));
-            statment.setInt(8, 11111);
-
-            // offer_score
-            statment.setInt(9, 112);
-            statment.setString(10, "setStringset");
-            statment.setInt(11, 111);
-            statment.setInt(12, 11234);
-            statment.setInt(13, 123456);
-
-            // dead_line
-            statment.setDate(14, new Date(System.currentTimeMillis()));
-
-            statment.setString(15, "setStringsetStdf");
-
-            // best_answer
-            statment.setInt(16, 111111111);
-            statment.setString(17, "Y");
-            statment.setInt(18, 11234);
-            statment.setInt(19, 11234);
-            statment.setInt(20, 11234);
-            statment.setInt(21, 11234);
-
-            // id
-            // statment.setInt(22, 1);
-
-            statment.executeUpdate();
+        	for(int i=0;i<1;i++){
+            statment = conn.prepareStatement("SELECT ID, SDID, F_SDID, APP_ID, RESERVE1, RESERVE2, RESERVE3 FROM SD_RELATION.RELATION_ORIGIN WHERE SDID =? AND F_SDID=? AND APP_ID = ?");
+            statment.setLong(1, 111111);
+            statment.setLong(2, 123);
+            statment.setLong(3, 112);
+            ResultSet rs = statment.executeQuery();
+            while(rs.next()){
+            	System.out.println(rs.getString("ID"));
+            }
+           if (statment != null) {
+               try {
+                   statment.close();
+               } catch (Exception e) {
+               }
+           }
+          /* statment = conn.prepareStatement("select LAST_INSERT_ID() as id");
+           result = statment.executeQuery();
+           result.next();
+           Object lastInsertId = result.getLong("id");
+           System.out.println(lastInsertId);
+           if (result != null) {
+               try {
+                   result.close();
+               } catch (Exception e) {
+               }
+           }
+           if (statment != null) {
+               try {
+                   statment.close();
+               } catch (Exception e) {
+               }
+           }
+           
+           statment = conn.prepareStatement("select * from SD_RELATION.RELATION_ORIGIN where sdid=35676 and f_sdid=129"+i);
+           result = statment.executeQuery();
+          if( result.next())
+           lastInsertId = result.getLong("id");
+           if (result != null) {
+               try {
+                   result.close();
+               } catch (Exception e) {
+               }
+           }
+           if (statment != null) {
+               try {
+                   statment.close();
+               } catch (Exception e) {
+               }
+           }*/
+        }
         } catch (Exception e) {
             e.printStackTrace();
         } finally {

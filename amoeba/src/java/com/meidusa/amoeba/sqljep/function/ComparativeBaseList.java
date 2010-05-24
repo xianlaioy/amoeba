@@ -6,7 +6,7 @@ import java.util.Comparator;
 import java.util.List;
 
 public abstract class ComparativeBaseList extends Comparative {
-
+	
     protected List<Comparative> list = new ArrayList<Comparative>();
 
     public ComparativeBaseList(int function, Comparable<?> value){
@@ -34,6 +34,8 @@ public abstract class ComparativeBaseList extends Comparative {
     @SuppressWarnings("unchecked")
     public abstract boolean intersect(int function, Comparable other, Comparator comparator);
 
+	public abstract boolean intersect(Comparative other,Comparator comparator);
+	
     public Object clone() {
         try {
             Constructor<? extends ComparativeBaseList> con = this.getClass().getConstructor((Class[]) null);
@@ -48,6 +50,20 @@ public abstract class ComparativeBaseList extends Comparative {
             e.printStackTrace();
             return null;
         }
-
     }
+    
+    public String toString(){
+    	StringBuffer buffer = new StringBuffer();
+    	buffer.append("[");
+    	int index =0;
+    	for(Comparative comp : list){
+    		buffer.append(comp.toString());
+    		if(index < list.size()-1){
+    			buffer.append(",");
+    		}
+			index++;
+    	}
+    	buffer.append("]");
+    	return buffer.toString();
+	}
 }

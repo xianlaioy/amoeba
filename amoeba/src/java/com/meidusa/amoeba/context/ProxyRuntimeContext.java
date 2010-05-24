@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
+import org.apache.commons.pool.PoolableObjectFactory;
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 import org.apache.log4j.helpers.LogLog;
@@ -55,7 +56,6 @@ import com.meidusa.amoeba.net.ConnectionManager;
 import com.meidusa.amoeba.net.poolable.MultipleLoadBalanceObjectPool;
 import com.meidusa.amoeba.net.poolable.ObjectPool;
 import com.meidusa.amoeba.net.poolable.PoolableObject;
-import com.meidusa.amoeba.net.poolable.PoolableObjectFactory;
 import com.meidusa.amoeba.route.QueryRouter;
 import com.meidusa.amoeba.util.Initialisable;
 import com.meidusa.amoeba.util.InitialisationException;
@@ -205,6 +205,7 @@ public abstract class ProxyRuntimeContext implements Reporter {
             try {
                 BeanObjectEntityConfig poolConfig = dbServerConfig.getPoolConfig();
                 ObjectPool pool = (ObjectPool) poolConfig.createBeanObject(false);
+                pool.setName(poolConfig.getName());
                 if (pool instanceof Initialisable) {
                     initialisableList.add((Initialisable) pool);
                 }
@@ -236,7 +237,6 @@ public abstract class ProxyRuntimeContext implements Reporter {
         initAllInitialisableBeans();
         initialisableList.clear();
         for (ConnectionManager cm : getConnectionManagerList().values()) {
-            cm.setExecutor(this.getReadExecutor());
             cm.start();
         }
         initPools();

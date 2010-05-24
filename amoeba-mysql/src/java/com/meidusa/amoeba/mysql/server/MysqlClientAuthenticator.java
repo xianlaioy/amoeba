@@ -34,10 +34,10 @@ import com.meidusa.amoeba.util.StringUtil;
  * @author <a href=mailto:piratebase@sina.com>Struct chen</a>
  */
 @SuppressWarnings("unchecked")
-public class MysqlAuthenticator extends DummyAuthenticator implements MySqlPacketConstant{
-	protected static Logger logger = Logger.getLogger(MysqlAuthenticator.class);
+public class MysqlClientAuthenticator extends DummyAuthenticator implements MySqlPacketConstant{
+	protected static Logger logger = Logger.getLogger(MysqlClientAuthenticator.class);
 	private Map map = new LRUMap(100);
-	public MysqlAuthenticator() {
+	public MysqlClientAuthenticator() {
 		
 	}
 
@@ -56,6 +56,7 @@ public class MysqlAuthenticator extends DummyAuthenticator implements MySqlPacke
 			mysqlConn.setCharset(CharsetMapping.INDEX_TO_CHARSET[autheticationPacket.charsetNumber & 0xff]);
 			boolean passwordchecked = false;
 			if(logger.isDebugEnabled()){
+				logger.debug("client charset="+CharsetMapping.INDEX_TO_CHARSET[autheticationPacket.charsetNumber & 0xff]);
 				if(conn.getInetAddress() != null && map.get(conn.getInetAddress().getHostAddress()) == null){
 					map.put(conn.getInetAddress().getHostAddress(), Boolean.TRUE);
 					long clientParam = autheticationPacket.clientParam;
@@ -102,7 +103,7 @@ public class MysqlAuthenticator extends DummyAuthenticator implements MySqlPacke
 				}
 			}else{
 				rdata.code = AuthResponseData.ERROR;
-				rdata.message = "Access denied for user '"+autheticationPacket.user+"'@'"+ conn.getChannel().socket().getLocalAddress().getHostName() +"'"
+				rdata.message = "Access denied for user '"+autheticationPacket.user+"'@'"+ conn.getSocketId() +"'"
 				+(autheticationPacket.encryptedPassword !=null?"(using password: YES)":"");
 			}
 			

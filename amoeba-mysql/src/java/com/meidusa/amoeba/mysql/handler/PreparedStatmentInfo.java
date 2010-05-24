@@ -13,6 +13,8 @@
  */
 package com.meidusa.amoeba.mysql.handler;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -24,6 +26,8 @@ import com.meidusa.amoeba.mysql.net.packet.OKforPreparedStatementPacket;
 import com.meidusa.amoeba.net.DatabaseConnection;
 import com.meidusa.amoeba.net.packet.AbstractPacketBuffer;
 import com.meidusa.amoeba.net.packet.PacketBuffer;
+import com.meidusa.amoeba.parser.ParseException;
+import com.meidusa.amoeba.parser.statement.Statement;
 
 /**
  * @author <a href=mailto:piratebase@sina.com>Struct chen</a>
@@ -34,6 +38,7 @@ public class PreparedStatmentInfo {
      * 客户端发送过来的 prepared statment sql语句
      */
     private String preparedStatment;
+    private Statement statment;
 
     private int    parameterCount;
 
@@ -47,12 +52,15 @@ public class PreparedStatmentInfo {
 
     private long   statmentId;
 
+    public List<byte[]> preparedPackets = new ArrayList<byte[]>();
     private Lock   typesLock = new ReentrantLock(false);
 
-    public PreparedStatmentInfo(DatabaseConnection conn, long id, String preparedSql){
-        PacketBuffer buffer = new AbstractPacketBuffer(2048);
+    public PreparedStatmentInfo(DatabaseConnection conn, long id, String preparedSql)throws ParseException{
+    	statment = ProxyRuntimeContext.getInstance().getQueryRouter().parseSql(conn, preparedSql);
         statmentId = id;
         this.preparedStatment = preparedSql;
+        parameterCount = ProxyRuntimeContext.getInstance().getQueryRouter().parseParameterCount(conn, preparedSql);
+        /* PacketBuffer buffer = new AbstractPacketBuffer(2048);
         OKforPreparedStatementPacket okPaket = new OKforPreparedStatementPacket();
         okPaket.columns = 1;
         okPaket.packetId = 1;
@@ -88,11 +96,27 @@ public class PreparedStatmentInfo {
             eof.serverStatus = 2;
             buffer.writeBytes(eof.toByteBuffer(conn).array());
         }
+        packetBuffer = buffer.toByteBuffer().array();*/
+    }
+    
+    public PreparedStatmentInfo (DatabaseConnection conn,long id, String preparedSql,List<byte[]> messageList) throws ParseException{
+    	statment = ProxyRuntimeContext.getInstance().getQueryRouter().parseSql(conn, preparedSql);
+    	PacketBuffer buffer = new AbstractPacketBuffer(2048);
+        statmentId = id;
+        this.preparedStatment = preparedSql;
+        OKforPreparedStatementPacket okPaket = new OKforPreparedStatementPacket();
+        okPaket.init(messageList.get(0),conn);
+        okPaket.statementHandlerId = id;
+        parameterCount = ProxyRuntimeContext.getInstance().getQueryRouter().parseParameterCount(conn, preparedSql);
+        messageList.remove(0);
+        messageList.add(0, okPaket.toByteBuffer(conn).array());
+        for(byte[] message : messageList){
+        	buffer.writeBytes(message);
+        }
         packetBuffer = buffer.toByteBuffer().array();
     }
 
-    public void setParameterTypes(int[] parameterTypes) {
-        typesLock.lock();
+    public void setParameterTypes(int[] parameterTypes) { typesLock.lock();
         try {
             this.parameterTypes = parameterTypes;
         } finally {
@@ -114,6 +138,15 @@ public class PreparedStatmentInfo {
     }
 
     public byte[] getByteBuffer() {
+    	if(packetBuffer == null){
+    		if(preparedPackets.size() >0){
+	    		PacketBuffer buffer = new AbstractPacketBuffer(2048);
+	    		for(byte[] message : preparedPackets){
+	            	buffer.writeBytes(message);
+	            }
+	            packetBuffer = buffer.toByteBuffer().array();
+    		}
+    	}
         return packetBuffer;
     }
 
@@ -121,10 +154,16 @@ public class PreparedStatmentInfo {
         return statmentId;
     }
 
+    public Statement getStatment(){
+    	return statment;
+    }
     public String getPreparedStatment() {
         return preparedStatment;
     }
 
+    public void addPacket(byte[] packet){
+    	preparedPackets.add(packet);
+    }
     public void setPreparedStatment(String preparedStatment) {
         this.preparedStatment = preparedStatment;
     }

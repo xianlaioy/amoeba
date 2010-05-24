@@ -70,6 +70,8 @@
 	
 	<function name="ASCII" class="com.meidusa.amoeba.parser.function.Ascii"/>
 	
+	<function name="UNIX_TIMESTAMP" class="com.meidusa.amoeba.parser.function.UnixTimestamp"/>
+	
 	<function name="INSERT" class="com.meidusa.amoeba.parser.function.Insert"/>
 	
 	<function name="INSTR" class="com.meidusa.amoeba.parser.function.Instr"/>
@@ -81,4 +83,10 @@
 	<function name="FIND_IN_SET" class="com.meidusa.amoeba.parser.function.UnknowableFunction"/>
 	<function name="FOUND_ROWS" class="com.meidusa.amoeba.parser.function.UnknowableFunction"/>
 	<function name="DATABASE" class="com.meidusa.amoeba.parser.function.UnknowableFunction"/>
+	<function name="LAST_INSERT_ID" class="com.meidusa.amoeba.parser.function.LastInsertId"/>
+	<function name="@@IDENTITY" class="com.meidusa.amoeba.parser.function.LastInsertId"/>
+	<function name="USER" class="com.meidusa.amoeba.parser.function.UnknowableFunction"/>
+	<function name="UUID" class="com.meidusa.amoeba.parser.function.UnknowableFunction"/>
+	<function name="INET_ATON" class="com.meidusa.amoeba.parser.function.UnknowableFunction"/>
+	<function name="REPLACE" class="com.meidusa.amoeba.parser.function.UnknowableFunction"/>
 </amoeba:function>

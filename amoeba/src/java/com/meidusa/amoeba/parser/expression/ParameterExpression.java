@@ -26,10 +26,16 @@ public class ParameterExpression extends Expression {
 	@SuppressWarnings("unchecked")
 	@Override
 	public Comparable evaluate(Object[] parameters) {
-		if(parameters == null){
+		if(parameters == null || parameters.length ==0){
 			return null;
 		}
-		return (Comparable)parameters[index];
+		if(parameters[index] instanceof Comparable){
+			return (Comparable)parameters[index];
+		}else if(parameters[index] instanceof byte[]){
+			return new String((byte[])parameters[index]);
+		}else{
+			return parameters[index]==null?null:parameters[index].toString();
+		}
 	}
 
 	public boolean isRealtime(){

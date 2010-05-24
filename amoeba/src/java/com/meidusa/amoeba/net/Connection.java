@@ -17,6 +17,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.CancelledKeyException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
@@ -48,12 +49,12 @@ public abstract class Connection implements NetEventHandler {
     protected MessageHandler    _handler;
     protected final Lock        closeLock     = new ReentrantLock(false);
     protected final Lock        postCloseLock = new ReentrantLock(false);
-
+    protected long _createTime = System.currentTimeMillis();
     protected boolean           closePosted   = false;
     private PacketInputStream   _fin;
 
     private PacketOutputStream  _fout;
-
+    protected Queue<byte[]> _inQueue     = new Queue<byte[]>();
     protected Queue<ByteBuffer> _outQueue     = new Queue<ByteBuffer>();
     private boolean             socketClosed  = false;
     protected String            host;
@@ -63,6 +64,9 @@ public abstract class Connection implements NetEventHandler {
         return packetFactory;
     }
 
+    public Queue<byte[]> getInQueue(){
+    	return _inQueue;
+    }
     public void setPacketFactory(PacketFactory<? extends Packet> packetFactory) {
         this.packetFactory = packetFactory;
     }
@@ -156,7 +160,7 @@ public abstract class Connection implements NetEventHandler {
         try {
             // we shouldn't be closed twice
             if (isClosed()) {
-                logger.warn("Attempted to re-close connection " + this + ".");
+                logger.warn("Attempted to re-close connection ["+ toString() + "]");
                 Thread.dumpStack();
                 return;
             }
@@ -170,22 +174,28 @@ public abstract class Connection implements NetEventHandler {
             logger.error(this + ",closeSocket,and endSession,handler=" + session);
             session.endSession();
         }
-
-        if (_selkey != null) {
-            _selkey.attach(null);
-            Selector selector = _selkey.selector();
-            _selkey.cancel();
-            // wake up again to trigger thread death
-            selector.wakeup();
-
-            _selkey = null;
+        
+        try{
+	        if (_selkey != null) {
+	            _selkey.attach(null);
+	            Selector selector = _selkey.selector();
+	            _selkey.cancel();
+	            // wake up again to trigger thread death
+	            selector.wakeup();
+	
+	            _selkey = null;
+	        }
+        }catch(Exception e){
+        	logger.warn("Error cancel connection selectkey [conn=" + toString() + "] error=" + e + "].");
         }
-
-        logger.debug("Closing channel " + this + ".");
+        
+        if(logger.isDebugEnabled()){
+        	logger.debug("Closing channel " + this + ".");
+        }
         try {
             _channel.close();
         } catch (IOException ioe) {
-            logger.warn("Error closing connection [conn=" + this + ", error=" + ioe + "].");
+            logger.warn("Error closing connection ["+ toString() + "], error=" + ioe + "].");
         }
 
         if (exception != null) {
@@ -245,7 +255,10 @@ public abstract class Connection implements NetEventHandler {
                 bytesInTotle += bytesIn;
                 byte[] msg = new byte[bytesIn];
                 _fin.read(msg);
-                messageProcess(msg);
+                doReceiveMessage(msg);
+            }
+            if(_inQueue.size()>0){
+            	messageProcess();
             }
         } catch (EOFException eofe) {
             // close down the socket gracefully
@@ -256,17 +269,25 @@ public abstract class Connection implements NetEventHandler {
             String msg = ioe.getMessage();
 
             if (msg == null || msg.indexOf("reset by peer") == -1) {
-                logger.info("Error reading message from socket [channel=" + StringUtil.safeToString(_channel) + ", error=" + ioe + "].", ioe);
+                logger.info("Error reading message from connection ["+ toString() + "], error=" + ioe + "].", ioe);
             }
             // deal with the failure
             handleFailure(ioe);
+        } catch (Exception exception) {
+        	logger.error("Error reading message from connection ["+ toString() + "], error=" + exception + "].", exception);
+            handleFailure(exception);
         }
 
         return bytesInTotle;
     }
 
-    protected void messageProcess(byte[] msg) {
-        _handler.handleMessage(this, msg);
+    
+    protected void doReceiveMessage(byte[] message){
+    	_inQueue.appendSilent(message);
+    }
+    
+    protected void messageProcess() {
+        _handler.handleMessage(this);
     }
 
     public boolean doWrite() throws IOException {
@@ -299,7 +320,7 @@ public abstract class Connection implements NetEventHandler {
              * ByteBuffer out= ByteBuffer.allocate(buffer.limit()); out.put(buffer); out.flip();
              */
             _outQueue.append(buffer);
-            _cmgr.invokeConnectionWriteMessage(this);
+            writeMessage();
         } catch (IOException e) {
             this._cmgr.connectionFailed(this, e);
         }
@@ -307,9 +328,37 @@ public abstract class Connection implements NetEventHandler {
 
     public void postMessage(ByteBuffer msg) {
         _outQueue.append(msg);
-        _cmgr.invokeConnectionWriteMessage(this);
+        writeMessage();
     }
 
+    protected void writeMessage() {
+        if (isClosed()) {
+            return;
+        }
+        try {
+            SelectionKey key = getSelectionKey();
+            if (!key.isValid()) {
+                handleFailure(new java.nio.channels.CancelledKeyException());
+                return;
+            }
+            synchronized (key) {
+                if (key != null && (key.interestOps() & SelectionKey.OP_WRITE) == 0) {
+                    /**
+                     * 发送数据，如果返回false，则表示socket send buffer 已经满了。则Selector 需要监听 Writeable event
+                     */
+                    boolean finished = doWrite();
+                    if (!finished) {
+                        key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
+                    }
+                }
+            }
+        } catch (IOException ioe) {
+            handleFailure(ioe);
+        }catch(CancelledKeyException ce){
+        	handleFailure(ce);
+        }
+    }
+    
     public boolean checkIdle(long now) {
         long idleMillis = now - _lastEvent;
         if (idleMillis < PING_INTERVAL + LATENCY_GRACE) {
@@ -318,7 +367,6 @@ public abstract class Connection implements NetEventHandler {
         if (isClosed()) {
             return true;
         }
-        logger.info("Disconnecting non-communicative connection [conn=" + this + ", idle=" + idleMillis + "ms].");
         return true;
     }
 
@@ -342,4 +390,16 @@ public abstract class Connection implements NetEventHandler {
 
     }
 
+    public String getSocketId(){
+    	return this.host+":"+this.port;
+    }
+    public String toString(){
+    	StringBuffer buffer = new StringBuffer();
+    	buffer.append(this.getClass().getCanonicalName());
+    	buffer.append("@").append(this.host).append(":").append(this.port);
+    	buffer.append(",hashcode=").append(this.hashCode());
+    	
+    	return buffer.toString();
+    	
+    }
 }

@@ -8,8 +8,9 @@
 		<property name="port">8066</property>
 		
 		<!-- proxy server绑定的IP -->
+		<!-- 
 		<property name="ipAddress">127.0.0.1</property>
-		
+		 -->
 		<!-- proxy server net IO Read thread size -->
 		<property name="readThreadPoolSize">20</property>
 		
@@ -39,7 +40,14 @@
 		manager负责Connection IO读写/死亡检测
 	-->
 	<connectionManagerList>
-		<connectionManager name="defaultManager" class="com.meidusa.amoeba.net.AuthingableConnectionManager"/>
+		<connectionManager name="defaultManager" class="com.meidusa.amoeba.net.MultiConnectionManagerWrapper">
+			<property name="subManagerClassName">com.meidusa.amoeba.net.AuthingableConnectionManager</property>
+			
+			<!-- 
+			  default value is avaliable Processors 
+			<property name="processors">5</property>
+			 -->
+		</connectionManager>
 	</connectionManagerList>
 	
 	<dbServerList>
@@ -89,7 +97,7 @@
 		
 		<dbServer name="multiPool" virtual="true">
 			<poolConfig class="com.meidusa.amoeba.server.MultipleServerPool">
-				<!-- 负载均衡参数 1=ROUNDROBIN , 2=WEIGHTBASED -->
+				<!-- 负载均衡参数 1=ROUNDROBIN , 2=WEIGHTBASED , 3=HA-->
 				<property name="loadbalance">1</property>
 				
 				<!-- 参与该pool负载均衡的poolName列表以逗号分割 -->

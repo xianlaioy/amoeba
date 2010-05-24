@@ -4,8 +4,8 @@ import java.util.concurrent.CountDownLatch;
 
 import org.apache.log4j.Logger;
 
-import com.meidusa.amoeba.aladdin.io.ResultPacket;
 import com.meidusa.amoeba.mysql.net.MysqlClientConnection;
+import com.meidusa.amoeba.mysql.net.packet.result.ResultPacket;
 import com.meidusa.amoeba.net.MessageHandler;
 import com.meidusa.amoeba.net.poolable.PoolableObject;
 
@@ -50,7 +50,7 @@ public abstract class QueryRunnable implements MessageHandlerRunner {
     /**
      * PoolableObject 将在end session 中返回到pool中
      */
-    protected abstract void doRun(PoolableObject conn);
+    protected abstract void doRun(PoolableObject conn) throws Exception;
 
     public void run() {
         try {

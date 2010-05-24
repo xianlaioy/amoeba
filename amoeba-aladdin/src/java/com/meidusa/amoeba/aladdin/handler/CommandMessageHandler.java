@@ -9,9 +9,9 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.log4j.Logger;
 
-import com.meidusa.amoeba.aladdin.io.ResultPacket;
 import com.meidusa.amoeba.context.ProxyRuntimeContext;
 import com.meidusa.amoeba.mysql.net.MysqlClientConnection;
+import com.meidusa.amoeba.mysql.net.packet.result.ResultPacket;
 import com.meidusa.amoeba.net.Connection;
 import com.meidusa.amoeba.net.MessageHandler;
 import com.meidusa.amoeba.net.Sessionable;
@@ -41,6 +41,8 @@ public abstract class CommandMessageHandler implements MessageHandler, Sessionab
     private final Lock              lock        = new ReentrantLock(false);
     private Map<Object, ObjectPool> connPoolMap = new HashMap<Object, ObjectPool>();
 
+	private boolean started;
+
     public CommandMessageHandler(MysqlClientConnection source, String query, Object parameter, ObjectPool[] pools,
                                  long timeout){
         this.source = source;
@@ -50,8 +52,10 @@ public abstract class CommandMessageHandler implements MessageHandler, Sessionab
         this.parameter = parameter;
         this.packet = newResultPacket(query);
     }
-
-    public void handleMessage(Connection conn, byte[] message) {
+	public boolean isMultiplayer(){
+		return pools.length>1;
+	}
+    public void handleMessage(Connection conn) {
         return;
     }
 
@@ -70,6 +74,10 @@ public abstract class CommandMessageHandler implements MessageHandler, Sessionab
         }
     }
 
+	public boolean isStarted(){
+		return this.started;
+	}
+	
     public void startSession() throws Exception {
         if (pools.length == 1) {
             final PoolableObject conn = (PoolableObject) pools[0].borrowObject();
@@ -81,6 +89,7 @@ public abstract class CommandMessageHandler implements MessageHandler, Sessionab
             } else {
                 runnable = newQueryRunnable(null, conn, query, parameter, packet);
             }
+            started = true;
             runnable.init(this);
             runnable.run();
         } else {
@@ -93,7 +102,7 @@ public abstract class CommandMessageHandler implements MessageHandler, Sessionab
                 runnable.init(this);
                 ProxyRuntimeContext.getInstance().getClientSideExecutor().execute(runnable);
             }
-
+            started = true;
             if (timeout > 0) {
                 latch.await(timeout, TimeUnit.MILLISECONDS);
             } else {

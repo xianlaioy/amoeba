@@ -12,14 +12,12 @@
 package com.meidusa.amoeba.mysql.net;
 
 import java.nio.channels.SocketChannel;
-import java.util.concurrent.locks.Lock;
 
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 
 import com.meidusa.amoeba.net.poolable.ObjectPool;
 import com.meidusa.amoeba.net.poolable.PoolableObject;
-import com.meidusa.amoeba.context.ProxyRuntimeContext;
 import com.meidusa.amoeba.mysql.context.MysqlProxyRuntimeContext;
 import com.meidusa.amoeba.mysql.io.MySqlPacketConstant;
 import com.meidusa.amoeba.mysql.net.packet.AuthenticationPacket;
@@ -49,10 +47,8 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 	
 	public static enum Status{WAITE_HANDSHAKE,AUTHING,COMPLETED};
 	private Status status = Status.WAITE_HANDSHAKE;
-	private CommandInfo commandInfo = null;
-	private CommandMessageQueueRunner commandRunner;
 	private ObjectPool objectPool;
-	private long createTime = System.currentTimeMillis();
+	
 	private boolean active;
 	private long serverCapabilities;
 
@@ -66,127 +62,131 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 	private String seed;
 	public MysqlServerConnection(SocketChannel channel, long createStamp) {
 		super(channel, createStamp);
-		//commandRunner = new CommandMessageQueueRunner(this);
 	}
 	
-	public void handleMessage(Connection conn,byte[] message) {
-		
-		if(!isAuthenticated()){
-			/**
-			 * 第一次数据为 handshake packet
-			 * 第二次数据为 OkPacket packet or ErrorPacket 
-			 * 
-			 */
-			MysqlPacketBuffer buffer = new MysqlPacketBuffer(message);
-			if(MysqlPacketBuffer.isErrorPacket(message)){
-				setAuthenticated(false);
-				ErrorPacket error = new ErrorPacket();
-				error.init(message,conn);
-				logger.error("handShake with "+this._channel.socket().getRemoteSocketAddress()+" error:"+error.serverErrorMessage);
-				return;
-			}
-			
-			if(status == Status.WAITE_HANDSHAKE){
-				HandshakePacket handpacket = new HandshakePacket();
-				handpacket.init(buffer);
-				this.serverCapabilities = handpacket.serverCapabilities;
-		        this.serverVersion = handpacket.serverVersion;
-		        splitVersion();
-		        if (!versionMeetsMinimum(4, 1, 1) || handpacket.protocolVersion != 10){
-		        	logger.error("amoeba support version minimum 4.1.1  and protocol version 10");
-		        	System.exit(-1);
-		        }
-		        
-				if(logger.isDebugEnabled()){
-					logger.debug("receive HandshakePacket packet from server:"+this.host +":"+this.port);
-				}
-				MysqlProxyRuntimeContext context = ((MysqlProxyRuntimeContext)MysqlProxyRuntimeContext.getInstance());
-				if(context.getServerCharset() == null && handpacket.serverCharsetIndex > 0){
-					context.setServerCharsetIndex(handpacket.serverCharsetIndex);
-					logger.info("mysql server Handshake= "+handpacket.toString());
-				}
-				
-				
-				AuthenticationPacket authing = new AuthenticationPacket();
-				authing.password = this.getPassword();
-				this.seed = authing.seed = handpacket.seed+handpacket.restOfScrambleBuff;
-				authing.clientParam = CLIENT_FOUND_ROWS;
-				authing.charsetNumber = (byte)(DEFAULT_CHARSET_INDEX & 0xff);
-				this.setCharset(CharsetMapping.INDEX_TO_CHARSET[DEFAULT_CHARSET_INDEX]);
-				
-				if (versionMeetsMinimum(4, 1, 0)) {
-		            if (versionMeetsMinimum(4, 1, 1)) {
-		            	authing.clientParam |= CLIENT_PROTOCOL_41;
-		                // Need this to get server status values
-		            	authing.clientParam |= CLIENT_TRANSACTIONS;
-
-		                // We always allow multiple result sets
-		            	authing.clientParam |= CLIENT_MULTI_RESULTS;
-
-		                // We allow the user to configure whether
-		                // or not they want to support multiple queries
-		                // (by default, this is disabled).
-		                /*if (this.connection.getAllowMultiQueries()) {
-		                    this.clientParam |= CLIENT_MULTI_QUERIES;
-		                }*/
-		            } else {
-		            	authing.clientParam |= CLIENT_RESERVED;
-		            }
-		        }
-				
-				if (handpacket.protocolVersion > 9) {
-					authing.clientParam |= CLIENT_LONG_PASSWORD; // for long passwords
-		        } else {
-		        	authing.clientParam &= ~CLIENT_LONG_PASSWORD;
-		        }
-				
-				if ((this.serverCapabilities & CLIENT_LONG_FLAG) != 0) {
-					authing.clientParam |= CLIENT_LONG_FLAG;
-		        }
-				
-				if ((this.serverCapabilities & CLIENT_SECURE_CONNECTION) != 0) {
-					authing.clientParam |= CLIENT_SECURE_CONNECTION;
-				}
-				
-				authing.user = this.getUser();
-				authing.packetId = 1;
-				
-				if(this.getSchema() != null){
-					authing.database = this.getSchema();
-					authing.clientParam |= CLIENT_CONNECT_WITH_DB;
-				}
-				
-				authing.maxThreeBytes = 1073741824;
-				
-				status = Status.AUTHING;
-				if(logger.isDebugEnabled()){
-					logger.debug("authing packet sent to server:"+this.host +":"+this.port);
-				}
-				this.postMessage(authing.toByteBuffer(conn).array());
-			}else if(status == Status.AUTHING){
-				if(logger.isDebugEnabled()){
-					logger.debug("authing result packet from server:"+this.host +":"+this.port);
-				}
-				
-				if(MysqlPacketBuffer.isOkPacket(message)){
-					setAuthenticated(true);
+	public void handleMessage(Connection conn) {
+		byte[] message = null;
+		while((message = this.getInQueue().getNonBlocking()) != null){
+			if(!isAuthenticated()){
+				/**
+				 * 第一次数据为 handshake packet
+				 * 第二次数据为 OkPacket packet or ErrorPacket 
+				 * 
+				 */
+				MysqlPacketBuffer buffer = new MysqlPacketBuffer(message);
+				if(MysqlPacketBuffer.isErrorPacket(message)){
+					setAuthenticated(false);
+					ErrorPacket error = new ErrorPacket();
+					error.init(message,conn);
+					logger.error("handShake with "+this._channel.socket().getRemoteSocketAddress()+" error:"+error.serverErrorMessage);
 					return;
-				}else{
-					if(message.length<9 && MysqlPacketBuffer.isEofPacket(message)){
-						Scramble323Packet packet = new Scramble323Packet();
-						packet.packetId = 3;
-						packet.seed323 = this.seed.substring(0, 8);
-						packet.password = this.getPassword();
-						this.postMessage(packet.toByteBuffer(conn).array());
-						logger.debug("server request scrambled password in old format");
+				}
+				
+				if(status == Status.WAITE_HANDSHAKE){
+					HandshakePacket handpacket = new HandshakePacket();
+					handpacket.init(buffer);
+					if(logger.isDebugEnabled()){
+						
+					}
+					this.serverCapabilities = handpacket.serverCapabilities;
+			        this.serverVersion = handpacket.serverVersion;
+			        splitVersion();
+			        if (!versionMeetsMinimum(4, 1, 1) || handpacket.protocolVersion != 10){
+			        	logger.error("amoeba support version minimum 4.1.1  and protocol version 10");
+			        	System.exit(-1);
+			        }
+			        
+					if(logger.isDebugEnabled()){
+						logger.debug("receive HandshakePacket packet from server:"+this.host +":"+this.port);
+					}
+					MysqlProxyRuntimeContext context = ((MysqlProxyRuntimeContext)MysqlProxyRuntimeContext.getInstance());
+					if(context.getServerCharset() == null && handpacket.serverCharsetIndex > 0){
+						context.setServerCharsetIndex(handpacket.serverCharsetIndex);
+						logger.info("mysql server Handshake= "+handpacket.toString());
+					}
+					
+					
+					AuthenticationPacket authing = new AuthenticationPacket();
+					authing.password = this.getPassword();
+					this.seed = authing.seed = handpacket.seed+handpacket.restOfScrambleBuff;
+					authing.clientParam = CLIENT_FOUND_ROWS;
+					authing.charsetNumber = (byte)(DEFAULT_CHARSET_INDEX & 0xff);
+					this.setCharset(CharsetMapping.INDEX_TO_CHARSET[DEFAULT_CHARSET_INDEX]);
+					
+					if (versionMeetsMinimum(4, 1, 0)) {
+			            if (versionMeetsMinimum(4, 1, 1)) {
+			            	authing.clientParam |= CLIENT_PROTOCOL_41;
+			                // Need this to get server status values
+			            	authing.clientParam |= CLIENT_TRANSACTIONS;
+	
+			                // We always allow multiple result sets
+			            	authing.clientParam |= CLIENT_MULTI_RESULTS;
+	
+			                // We allow the user to configure whether
+			                // or not they want to support multiple queries
+			                // (by default, this is disabled).
+			                /*if (this.connection.getAllowMultiQueries()) {
+			                    this.clientParam |= CLIENT_MULTI_QUERIES;
+			                }*/
+			            } else {
+			            	authing.clientParam |= CLIENT_RESERVED;
+			            }
+			        }
+					
+					if (handpacket.protocolVersion > 9) {
+						authing.clientParam |= CLIENT_LONG_PASSWORD; // for long passwords
+			        } else {
+			        	authing.clientParam &= ~CLIENT_LONG_PASSWORD;
+			        }
+					
+					if ((this.serverCapabilities & CLIENT_LONG_FLAG) != 0) {
+						authing.clientParam |= CLIENT_LONG_FLAG;
+			        }
+					
+					if ((this.serverCapabilities & CLIENT_SECURE_CONNECTION) != 0) {
+						authing.clientParam |= CLIENT_SECURE_CONNECTION;
+					}
+					
+					authing.user = this.getUser();
+					authing.packetId = 1;
+					
+					if(this.getSchema() != null){
+						authing.database = this.getSchema();
+						authing.clientParam |= CLIENT_CONNECT_WITH_DB;
+					}
+					
+					authing.maxThreeBytes = 1073741824;
+					
+					status = Status.AUTHING;
+					if(logger.isDebugEnabled()){
+						logger.debug("authing packet sent to server:"+this.host +":"+this.port);
+					}
+					this.postMessage(authing.toByteBuffer(conn).array());
+				}else if(status == Status.AUTHING){
+					if(logger.isDebugEnabled()){
+						logger.debug("authing result packet from server:"+this.host +":"+this.port);
+					}
+					
+					if(MysqlPacketBuffer.isOkPacket(message)){
+						setAuthenticated(true);
+						return;
 					}else{
-						logger.warn("server response packet from :"+this._channel.socket().getRemoteSocketAddress()+" :\n"+StringUtil.dumpAsHex(message, message.length));
+						if(message.length<9 && MysqlPacketBuffer.isEofPacket(message)){
+							Scramble323Packet packet = new Scramble323Packet();
+							packet.packetId = 3;
+							packet.seed323 = this.seed.substring(0, 8);
+							packet.password = this.getPassword();
+							this.postMessage(packet.toByteBuffer(conn).array());
+							logger.debug("server request scrambled password in old format");
+						}else{
+							logger.warn("server response packet from :"+this._channel.socket().getRemoteSocketAddress()+" :\n"+StringUtil.dumpAsHex(message, message.length),new Exception());
+						}
 					}
 				}
+	
+			}else{
+				logger.warn("server "+this._channel.socket().getRemoteSocketAddress()+" raw handler message:"+StringUtil.dumpAsHex(message, message.length));
 			}
-
-		}else{
-			logger.warn("server "+this._channel.socket().getRemoteSocketAddress()+" raw handler message:"+StringUtil.dumpAsHex(message, message.length));
 		}
 		
 	}
@@ -306,14 +306,29 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 	 * 正在处于验证的Connection Idle时间可以设置相应的少一点。
 	 */
 	public boolean checkIdle(long now) {
+		if (isClosed()) {
+            return true;
+        }
 		if(isAuthenticated()){
+			//处于使用中的链接， 如果超过5分钟没有发生网络IO，则需要关闭该链接 
+			long idleMillis = now - _lastEvent;
+			if(isActive()){
+				if (idleMillis > 5 * 60 * 1000) {
+					return true;
+				}
+			}
 			if(_handler instanceof Sessionable){
 				/**
 				 * 该处在高并发的情况下可能会发生ClassCastException 异常,为了提升性能,这儿将忽略这种异常.
 				 */
 				try{
 					Sessionable session = (Sessionable)_handler;
-					return session.checkIdle(now);
+					boolean sessionIdle = session.checkIdle(now);
+					if(sessionIdle){
+						logger.error("Session timeout. conn="+this.toString()+" ,idleMillis="+idleMillis);
+					}
+					
+					return sessionIdle;
 				}catch(ClassCastException castException){
 					return false;
 				}
@@ -324,47 +339,13 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 			if (idleMillis < 15000) {
 				return false;
 			}
-			logger.warn("Disconnecting non-communicative server [conn=" + this
-					+ (this.getChannel() != null?","+this.getChannel().socket():", socket closed!") +", idle=" + idleMillis + "ms]. life="+(System.currentTimeMillis()-createTime));
 			return true;
 		}
 	}
 	
-	/**
-	 * commandInfo 存在，并且runner没启动，则需要执行runner。
-	 * runner没结束，并且command已经结束，则需要被blocked住
-	 * runner running and command not end：runner handle those messages
-	 */
-	protected void messageProcess(byte[] msg){
-		if(commandInfo != null){
-			if(commandRunner != null){
-				if(commandRunner.getRunnerStatus() != CommandMessageQueueRunner.RunnerStatus.RUNNING){
-					final Lock lock = commandRunner.getLock();
-					lock.lock();
-					try{
-						commandRunner.setRunnerStatus(CommandMessageQueueRunner.RunnerStatus.RUNNING);
-						ProxyRuntimeContext.getInstance().getServerSideExecutor().execute(commandRunner);
-					}finally{
-			        	lock.unlock();
-			        }
-				}
-				commandRunner.handleMessage(this, msg);
-			}else{
-				super.messageProcess(msg);
-			}
-		}else{
-			super.messageProcess(msg);
-		}
-	}
-
 	
 	public void appendReport(StringBuilder buffer, long now, long sinceLast,
 			boolean reset,Level level) {
-		
-		if(commandRunner != null){
-			buffer.append("    -- Command: messageQueueSize:").append(commandRunner.getQueueSize());
-			buffer.append(",runner.Status:").append(commandRunner.getRunnerStatus()).append("\n");
-		}
 		
 		if(this._handler instanceof Reporter.SubReporter && this._handler != this){
 			Reporter.SubReporter reporter = (Reporter.SubReporter)(this._handler);
@@ -374,20 +355,9 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 
 	
 	public void finishedCommand(CommandInfo command) {
-		if(commandRunner != null){
-			final Lock lock = commandRunner.getLock();
-		    lock.lock();
-			try{
-		    	commandRunner.setRunnerStatus(CommandMessageQueueRunner.RunnerStatus.WAITTOEND);
-				this.commandInfo = null;
-		    }finally{
-		    	lock.unlock();
-		    }
-		}
 	}
 
 	public void startCommand(CommandInfo command) {
-	    this.commandInfo = command;
 	}
 
 	public ObjectPool getObjectPool() {
@@ -429,12 +399,17 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 				if(isActive()){
 					tmpPool.invalidateObject(this);
 				}
+				if(_handler instanceof Sessionable){
+					/**
+					 * 该处在高并发的情况下可能会发生ClassCastException 异常,为了提升性能,这儿将忽略这种异常.
+					 */
+					Sessionable session = (Sessionable)_handler;
+					if(!session.isEnded()){
+						session.endSession();
+					}
+				}
 			}
 		} catch (Exception e) {
-		}
-		
-		if(commandRunner != null && commandRunner.getRunnerStatus() == CommandMessageQueueRunner.RunnerStatus.RUNNING){
-			commandRunner.interrupt();
 		}
 	}
 	

@@ -42,6 +42,8 @@ import com.meidusa.amoeba.net.packet.Packet;
 import com.meidusa.amoeba.net.packet.PacketBuffer;
 import com.meidusa.amoeba.net.poolable.ObjectPool;
 import com.meidusa.amoeba.net.poolable.PoolableObject;
+import com.meidusa.amoeba.parser.statement.InsertStatement;
+import com.meidusa.amoeba.parser.statement.Statement;
 import com.meidusa.amoeba.util.Reporter;
 import com.meidusa.amoeba.util.StringUtil;
 
@@ -84,7 +86,7 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 		}
 		int statusCode;
 		int packetIndex;
-		List<byte[]> buffers;
+		List<byte[]> buffers = new ArrayList<byte[]>();
 		protected  byte commandType;
 		
 		public void clearBuffer(){
@@ -129,8 +131,10 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 		protected Map<MysqlServerConnection,ConnectionStatuts> connStatusMap = new HashMap<MysqlServerConnection,ConnectionStatuts>();
 		private boolean mainCommandExecuted;
 		private MysqlClientConnection source;
-		public CommandQueue(MysqlClientConnection source){
+		private Statement statment;
+		public CommandQueue(MysqlClientConnection source,Statement statment){
 			this.source = source;
+			this.statment = statment;
 		}
 		public boolean isMultiple(){
 			return connStatusMap.size()>1;
@@ -178,39 +182,46 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 			if(connStatus == null){
 				logger.error("connection Status not Found, byffer="+StringUtil.dumpAsHex(buffer, buffer.length));
 			}
+			connStatus.buffers.add(buffer);
 			isCompleted = connStatus.isCompleted(buffer);
 			connStatus.packetIndex ++;
 			/**
 			 * 如果是多个连接的，需要将数据缓存起来，等待命令全部完成以后，将数据进行组装，然后发送到客户端
 			 * {@link #CommandMessageHandler.mergeMessageToClient}
 			 */
-			if(connStatus.buffers == null){
-				connStatus.buffers = new ArrayList<byte[]>();
-			}
-			connStatus.buffers.add(buffer);
+			
 			if(isCompleted){
-				lock.lock();
-				try{
-					if(currentCommand.getCompletedCount().incrementAndGet() == connStatusMap.size()){
-						if(logger.isDebugEnabled()){
-							Packet packet = null;
-							if(MysqlPacketBuffer.isErrorPacket(buffer)){
-								packet = new ErrorPacket();
-							}else if(MysqlPacketBuffer.isEofPacket(buffer)){
-								packet = new EOFPacket();
-							}else if(MysqlPacketBuffer.isOkPacket(buffer)){
-								packet = new OkPacket();
+				//set last insert id to client connection;
+				if(conn != source){
+					
+					if(MysqlPacketBuffer.isOkPacket(buffer)){
+						OkPacket packet = new OkPacket();
+						packet.init(buffer,conn);
+						if(statment instanceof InsertStatement && currentCommand.isMain()){
+							if(packet.insertId>0){
+								source.setLastInsertId(packet.insertId);
+								logger.debug("laster insert id="+packet.insertId);
 							}
-							packet.init(buffer,conn);
-							logger.debug("returned Packet:"+packet);
 						}
-						return CommandStatus.AllCompleted;
-						
-					}else{
-						return CommandStatus.ConnectionCompleted;
 					}
-				}finally{
-					lock.unlock();
+				}
+				if(currentCommand.getCompletedCount().incrementAndGet() == connStatusMap.size()){
+					if(logger.isDebugEnabled()){
+						Packet packet = null;
+						if(MysqlPacketBuffer.isErrorPacket(buffer)){
+							packet = new ErrorPacket();
+						}else if(MysqlPacketBuffer.isEofPacket(buffer)){
+							packet = new EOFPacket();
+						}else if(MysqlPacketBuffer.isOkPacket(buffer)){
+							packet = new OkPacket();
+						}
+						packet.init(buffer,conn);
+						logger.debug("returned Packet:"+packet);
+					}
+					return CommandStatus.AllCompleted;
+					
+				}else{
+					return CommandStatus.ConnectionCompleted;
 				}
 			}else{
 				return CommandStatus.ConnectionNotComplete;
@@ -261,12 +272,13 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 	private CommandInfo info = new CommandInfo();
 	protected byte commandType;
 	protected Map<Connection,MessageHandler> handlerMap = new HashMap<Connection,MessageHandler>();
-	private final Lock lock = new ReentrantLock(false);
 	private PacketBuffer buffer = new AbstractPacketBuffer(1400);
-	public CommandMessageHandler(final MysqlClientConnection source,byte[] query,ObjectPool[] pools,long timeout){
+	private boolean started;
+	private long lastTimeMillis = System.currentTimeMillis();
+	public CommandMessageHandler(final MysqlClientConnection source,byte[] query,Statement statment, ObjectPool[] pools,long timeout){
 		handlerMap.put(source, source.getMessageHandler());
 		source.setMessageHandler(this);
-		commandQueue = new CommandQueue(source);
+		commandQueue = new CommandQueue(source,statment);
 		QueryCommandPacket command = new QueryCommandPacket();
 		command.init(query,source);
 		this.pools = pools;
@@ -278,6 +290,9 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 		this.timeout = timeout;
 	}
 	
+	public boolean isMultiplayer(){
+		return commandQueue.isMultiple();
+	}
 	/**
 	 * 判断被handled的Connection 消息传送是否都完成
 	 * @return
@@ -392,101 +407,98 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 		}
 	}
 	
-	public void handleMessage(Connection fromConn, byte[] message) {
-		/*if(ended){
-			logger.error("ended session handler handle message:\n"+StringUtil.dumpAsHex(message, message.length));
-			return;
-		}*/
-
-		if(fromConn == source){
-			CommandInfo info = new CommandInfo();
-			info.setBuffer(message);
-			info.setMain(true);
-			
-			if(!commandQueue.appendCommand(info,false)){
-				dispatchMessageFrom(source,message);
-			}
-		}else{
-			
-			if(logger.isDebugEnabled()){
-				if(MysqlPacketBuffer.isErrorPacket(message)){
-					logger.error("connection="+fromConn.hashCode()+",error packet:\n"+StringUtil.dumpAsHex(message, message.length));
-				}
-			}
-			//判断命令是否完成了
-			CommandStatus commStatus = commandQueue.checkResponseCompleted(fromConn, message);
-			
-			if(CommandStatus.AllCompleted == commStatus || CommandStatus.ConnectionCompleted == commStatus){
-				finishedConnectionCommand(fromConn,commandQueue.currentCommand);
-				lock.lock();
-				try{
-					if(this.ended){
-						releaseConnection(fromConn);
-					}
-				}finally{
-					lock.unlock();
-				}
-			}
-			
-			if(CommandStatus.AllCompleted == commStatus){
-				try{
-					if(commandQueue.currentCommand.isMain()){
-						commandQueue.mainCommandExecuted = true;
-						releaseConnection(source);
-					}
-
-					/**
-					 * 如果是客户端请求的命令则:
-					 * 1、请求是多台server的，需要进行合并数据
-					 * 2、单台server直接写出到客户端
-					 */
-					
-					if(commandQueue.currentCommand.isMain()){
-						if(commandQueue.isMultiple()){
-							List<byte[]> list = this.mergeMessages();
-							if(list != null){
-								for(byte[] buffer : list){
-									dispatchMessageFrom(fromConn,buffer);
-								}
-							}
-						}else{
-							dispatchMessageFrom(fromConn,message);
-						}
-					}else{
-						//非主命令发送以后返回出错信息，则结束当前的session
-						Collection<ConnectionStatuts> connectionStatutsSet = commandQueue.connStatusMap.values();
-						for(ConnectionStatuts connStatus : connectionStatutsSet){
-							//看是否每个服务器返回的数据包都没有异常信息。
-							if((connStatus.statusCode & SessionStatus.ERROR) >0){
-								this.commandQueue.currentCommand.setStatusCode(connStatus.statusCode);
-								byte[] errorBuffer = connStatus.buffers.get(connStatus.buffers.size()-1);
-								if(!commandQueue.mainCommandExecuted){
-									dispatchMessageFrom(connStatus.conn,errorBuffer);
-									if(source.isAutoCommit()){
-										this.endSession();
-									}
-								}else{
-									if(logger.isDebugEnabled()){
-										byte[] commandBuffer = commandQueue.currentCommand.getBuffer();
-										StringBuffer buffer = new StringBuffer();
-										buffer.append("Current Command Execute Error:\n");
-										buffer.append(StringUtil.dumpAsHex(commandBuffer,commandBuffer.length));
-										buffer.append("\n error Packet:\n");
-										buffer.append(StringUtil.dumpAsHex(errorBuffer,errorBuffer.length));
-										logger.debug(buffer.toString());
-									}
-								}
-								return;
-							}
-						}
-					}
-				}finally{
-					afterCommandCompleted(commandQueue.currentCommand);
+	public synchronized void handleMessage(Connection fromConn) {
+		byte[] message = null;
+		lastTimeMillis = System.currentTimeMillis();
+		while((message = fromConn.getInQueue().getNonBlocking()) != null){
+			if(fromConn == source){
+				CommandInfo info = new CommandInfo();
+				info.setBuffer(message);
+				info.setMain(true);
+				
+				if(!commandQueue.appendCommand(info,false)){
+					dispatchMessageFrom(source,message);
 				}
 			}else{
-				if(commandQueue.currentCommand.isMain()){
-					if(!commandQueue.isMultiple()){
-						dispatchMessageFrom(fromConn,message);
+				
+				if(logger.isDebugEnabled()){
+					if(MysqlPacketBuffer.isErrorPacket(message)){
+						logger.error("connection="+fromConn.hashCode()+",error packet:\n"+StringUtil.dumpAsHex(message, message.length));
+					}
+				}
+				//判断命令是否完成了
+				CommandStatus commStatus = commandQueue.checkResponseCompleted(fromConn, message);
+				
+				if(CommandStatus.AllCompleted == commStatus || CommandStatus.ConnectionCompleted == commStatus){
+					finishedConnectionCommand(fromConn,commandQueue.currentCommand);
+					synchronized (this) {
+						if(this.ended){
+							releaseConnection(fromConn);
+							return;
+						}
+					}
+				}
+				
+				if(CommandStatus.AllCompleted == commStatus){
+					try{
+						if(commandQueue.currentCommand.isMain()){
+							commandQueue.mainCommandExecuted = true;
+							releaseConnection(source);
+						}
+	
+						/**
+						 * 如果是客户端请求的命令则:
+						 * 1、请求是多台server的，需要进行合并数据
+						 * 2、单台server直接写出到客户端
+						 */
+						
+						if(commandQueue.currentCommand.isMain()){
+							if(commandQueue.isMultiple()){
+								List<byte[]> list = this.mergeMessages();
+								if(list != null){
+									for(byte[] buffer : list){
+										dispatchMessageFrom(fromConn,buffer);
+									}
+								}
+							}else{
+								dispatchMessageFrom(fromConn,message);
+							}
+						}else{
+							//非主命令发送以后返回出错信息，则结束当前的session
+							Collection<ConnectionStatuts> connectionStatutsSet = commandQueue.connStatusMap.values();
+							for(ConnectionStatuts connStatus : connectionStatutsSet){
+								//看是否每个服务器返回的数据包都没有异常信息。
+								if((connStatus.statusCode & SessionStatus.ERROR) >0){
+									this.commandQueue.currentCommand.setStatusCode(connStatus.statusCode);
+									byte[] errorBuffer = connStatus.buffers.get(connStatus.buffers.size()-1);
+									if(!commandQueue.mainCommandExecuted){
+										dispatchMessageFrom(connStatus.conn,errorBuffer);
+										if(source.isAutoCommit()){
+											this.endSession();
+										}
+									}else{
+										if(logger.isDebugEnabled()){
+											byte[] commandBuffer = commandQueue.currentCommand.getBuffer();
+											StringBuffer buffer = new StringBuffer();
+											buffer.append("Current Command Execute Error:\n");
+											buffer.append(StringUtil.dumpAsHex(commandBuffer,commandBuffer.length));
+											buffer.append("\n error Packet:\n");
+											buffer.append(StringUtil.dumpAsHex(errorBuffer,errorBuffer.length));
+											logger.debug(buffer.toString());
+										}
+									}
+									return;
+								}
+							}
+						}
+					}finally{
+						afterCommandCompleted(commandQueue.currentCommand);
+					}
+				}else{
+					if(commandQueue.currentCommand.isMain()){
+						if(!commandQueue.isMultiple()){
+							dispatchMessageFrom(fromConn,message);
+						}
 					}
 				}
 			}
@@ -498,7 +510,7 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 	 * 如果队列中没有命令，则结束当前回话
 	 * @param oldCommand 当前的command
 	 */
-	protected void afterCommandCompleted(CommandInfo oldCommand){
+	protected synchronized void afterCommandCompleted(CommandInfo oldCommand){
 		if(oldCommand.getRunnable()!= null){
 			oldCommand.getRunnable().run();
 		}
@@ -615,61 +627,52 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 	}
 	
 	protected void releaseConnection(Connection conn){
-		lock.lock();
-		try{
-			MessageHandler handler = handlerMap.remove(conn);
-			if(handler != null){
-				conn.setMessageHandler(handler);
-			}
-			
-			if(conn instanceof MysqlServerConnection){
-				PoolableObject pooledObject = (PoolableObject)conn;
-				if(pooledObject.getObjectPool() != null){
-					try {
-						pooledObject.getObjectPool().returnObject(conn);
-						if(logger.isDebugEnabled()){
-							logger.debug("connection:"+conn+" return to pool");
-						}
-					} catch (Exception e) {
+		MessageHandler handler = handlerMap.remove(conn);
+		if(handler != null){
+			conn.setMessageHandler(handler);
+		}
+		
+		if(conn instanceof MysqlServerConnection){
+			PoolableObject pooledObject = (PoolableObject)conn;
+			if(pooledObject.getObjectPool() != null){
+				try {
+					pooledObject.getObjectPool().returnObject(conn);
+					if(logger.isDebugEnabled()){
+						logger.debug("connection:"+conn+" return to pool");
 					}
+				} catch (Exception e) {
 				}
 			}
-		}finally{
-			lock.unlock();	
 		}
+		
 	}
 	
 	/**
 	 * 关闭该messageHandler 并且恢复所有这个messageHandler所handle的Connection
 	 */
-	protected void releaseAllCompletedConnection(){
-		lock.lock();
-		try{
-			Set<Map.Entry<Connection,MessageHandler>> handlerSet = handlerMap.entrySet();
-			for(Map.Entry<Connection,MessageHandler> entry:handlerSet){
-				MessageHandler handler = entry.getValue();
-				Connection connection = entry.getKey();
-				ConnectionStatuts status = this.commandQueue.connStatusMap.get(connection);
-				if(this.commandQueue.currentCommand == null || status != null && (status.statusCode & SessionStatus.COMPLETED)>0){
-					connection.setMessageHandler(handler);
-					if(!connection.isClosed()){
-						if(connection instanceof MysqlServerConnection){
-							PoolableObject pooledObject = (PoolableObject)connection;
-							if(pooledObject.getObjectPool() != null){
-								try {
-									pooledObject.getObjectPool().returnObject(connection);
-									if(logger.isDebugEnabled()){
-										logger.debug("connection:"+connection+" return to pool");
-									}
-								} catch (Exception e) {
+	protected synchronized void releaseAllCompletedConnection(){
+		Set<Map.Entry<Connection,MessageHandler>> handlerSet = handlerMap.entrySet();
+		for(Map.Entry<Connection,MessageHandler> entry:handlerSet){
+			MessageHandler handler = entry.getValue();
+			Connection connection = entry.getKey();
+			ConnectionStatuts status = this.commandQueue.connStatusMap.get(connection);
+			if(this.commandQueue.currentCommand == null || !isStarted() || (status != null && (status.statusCode & SessionStatus.COMPLETED)>0)){
+				connection.setMessageHandler(handler);
+				if(!connection.isClosed()){
+					if(connection instanceof MysqlServerConnection){
+						PoolableObject pooledObject = (PoolableObject)connection;
+						if(pooledObject.getObjectPool() != null){
+							try {
+								pooledObject.getObjectPool().returnObject(connection);
+								if(logger.isDebugEnabled()){
+									logger.debug("connection:"+connection+" return to pool");
 								}
+							} catch (Exception e) {
 							}
 						}
 					}
 				}
 			}
-		}finally{
-			lock.unlock();
 		}
 	}
 	
@@ -679,13 +682,27 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 	 * 一对一的连接直接通过{@link #dispatchMessageFrom(Connection, byte[])} 方法 直接发送出去,而不需要merge。
 	 * @return
 	 */
-	protected List<byte[]> mergeMessages(){
+	protected synchronized List<byte[]> mergeMessages(){
 		Collection<ConnectionStatuts> connectionStatutsSet = commandQueue.connStatusMap.values();
 		boolean isSelectQuery = true;
 		List<byte[]> buffers = null;
 		List<byte[]> returnList = new ArrayList<byte[]>();
 		for(ConnectionStatuts connStatus : connectionStatutsSet){
 			//看是否每个服务器返回的数据包都没有异常信息。
+			if(connStatus.buffers.size() ==0){
+				for(ConnectionStatuts connStatus1 : connectionStatutsSet){
+					
+					StringBuffer buffer = new StringBuffer();
+					
+					buffer.append("<---connection="+connStatus1.conn.getInetAddress()+"=="+connStatus1.conn.getInetAddress()+"------->\n");
+					for(byte[] buf : connStatus1.buffers){
+						buffer.append(StringUtil.dumpAsHex(buf,buf.length)+"\n");
+						buffer.append("------------\n");
+					}
+					buffer.append("<----error Packet:"+connStatus1.conn.getInetAddress()+"------>\n");
+					logger.error(buffer.toString());
+				}
+			}
 			byte[] buffer = connStatus.buffers.get(connStatus.buffers.size()-1);
 			buffers = connStatus.buffers;
 			if((connStatus.statusCode & SessionStatus.ERROR) >0){
@@ -756,10 +773,15 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 
 	protected abstract ConnectionStatuts newConnectionStatuts(Connection conn);
 
+	public boolean isStarted(){
+		return this.started;
+	}
+	
 	public synchronized void startSession() throws Exception {
 		if(logger.isInfoEnabled()){
 			logger.info(this+" session start");
 		}
+		
 		for(ObjectPool pool:pools){
 			MysqlServerConnection conn;
 			conn = (MysqlServerConnection)pool.borrowObject();
@@ -767,6 +789,8 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 			conn.setMessageHandler(this);
 			commandQueue.connStatusMap.put(conn, newConnectionStatuts(conn));
 		}
+		
+		this.started = true;
 		appendPreMainCommand();
 		this.commandQueue.appendCommand(info, true);
 		appendAfterMainCommand();
@@ -783,46 +807,37 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 				 * 避免由于各种原因造成服务器端没有发送数据或者已经结束的会话而ServerConnection无法返回Pool中。
 				 */
 				return (now - endTime)>15000;
+			}else{
+				return (now - lastTimeMillis) > 60 * 1000;
 			}
-			return false;
 		}
 	}
 
-	public void endSession() {
-		lock.lock();
-		try{
-			if(!ended){
-				endTime = System.currentTimeMillis();
-				ended = true;
-				this.releaseAllCompletedConnection();
-				if(!this.commandQueue.mainCommandExecuted){
-					ErrorPacket error = new ErrorPacket();
-					error.errno = 10000;
-					error.packetId = 2;
-					error.serverErrorMessage = "session was killed!!";
-					this.dispatchMessageTo(source, error.toByteBuffer(source).array());
-					logger.warn("session was killed!!",new Exception());
-					source.postClose(null);
-				}else{
-					if(logger.isInfoEnabled()){
-						logger.info(this+" session ended.");
-					}
+	public synchronized void endSession() {
+		if(!ended){
+			endTime = System.currentTimeMillis();
+			ended = true;
+			this.releaseAllCompletedConnection();
+			if(!this.commandQueue.mainCommandExecuted){
+				ErrorPacket error = new ErrorPacket();
+				error.errno = 10000;
+				error.packetId = 2;
+				error.serverErrorMessage = "session was killed!!";
+				this.dispatchMessageTo(source, error.toByteBuffer(source).array());
+				logger.warn("session was killed!!",new Exception());
+				source.postClose(null);
+			}else{
+				if(logger.isInfoEnabled()){
+					logger.info(this+" session ended.");
 				}
-				this.dispatchMessageTo(this.source, null);
 			}
-		}finally{
-			lock.unlock();
+			this.dispatchMessageTo(this.source, null);
 		}
 	}
 	
 
-	public boolean isEnded() {
-		lock.lock();
-		try{
-			return this.ended;
-		}finally{
-			lock.unlock();
-		}
+	public synchronized boolean isEnded() {
+		return this.ended;
 	}
 	
 	public void appendReport(StringBuilder buffer, long now, long sinceLast,boolean reset,Level level) {

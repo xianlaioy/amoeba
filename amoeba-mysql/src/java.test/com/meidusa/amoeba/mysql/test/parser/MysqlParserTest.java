@@ -5,7 +5,6 @@ package com.meidusa.amoeba.mysql.test.parser;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.StringReader;
 import java.util.HashMap;
@@ -13,9 +12,11 @@ import java.util.Map;
 
 import com.meidusa.amoeba.parser.Parser;
 import com.meidusa.amoeba.parser.dbobject.Column;
-import com.meidusa.amoeba.parser.statment.DMLStatment;
-import com.meidusa.amoeba.parser.statment.PropertyStatment;
-import com.meidusa.amoeba.parser.statment.Statment;
+import com.meidusa.amoeba.parser.statement.AbstractStatement;
+import com.meidusa.amoeba.parser.statement.DMLStatement;
+import com.meidusa.amoeba.parser.statement.PropertyStatement;
+import com.meidusa.amoeba.parser.statement.ShowStatement;
+import com.meidusa.amoeba.parser.statement.Statement;
 import com.meidusa.amoeba.parser.expression.Expression;
 import com.meidusa.amoeba.parser.function.*;
 import com.meidusa.amoeba.mysql.parser.sql.MysqlParser;
@@ -28,13 +29,18 @@ public class MysqlParserTest {
 	static Map<Column,Comparative> columnMap = new HashMap<Column,Comparative>();
 	public static void main(String[] args) throws Exception{
 		Map<String,Function> funMap = AbstractQueryRouter.loadFunctionMap("./build/build-mysql/conf/functionMap.xml");
-		String t = "`asdfasdfaf`";
-		System.out.println(t.substring(1,t.length()-1));
+		parser(funMap,"insert into TEST_SD_RELATION.RELATION_REVERSE ( SDID, F_SDID, STATE,   CREATE_TIME,   LAST_MODIFY_TIME, DEL_FLAG)   values (772152974,   1115596664,   1,   UNIX_TIMESTAMP()*1000,   UNIX_TIMESTAMP()*1000,0)  ON DUPLICATE KEY   UPDATE DEL_FLAG=0,   LAST_MODIFY_TIME=UNIX_TIMESTAMP()*1000;");
+		parser(funMap,"EXPLAIN SELECT REPLACE(UUID(), '-', '')");
+		parser(funMap," select * from moodrecord.t_twitter_hot where `key`='asdfasfd' order by add_time desc limit ?,?");
+		String t = "select ID from SD_MESSAGE.MESSAGE_NOTIFICATION  where  SDID=11 and name=? order by CREATE_TIME limit ?,?";
 		String sql1 = " SELECT * from account where time = DATE_ADD('1998-01-02', INTERVAL 31 DAY)";
 		String sql2 = "select * from account where 1<2 and not (id between 12+12 and 33) and id >12+3 or id not in (11,33,'23234') or  id  in (select test.ref_Id from test dd where dd.name='test')";
-		String[] sqls = {
+		String[] sqls = {"SELECT COUNT(*) FROM (   SELECT F_SDID   FROM SD_RELATION.RELATION_FOLLOW   WHERE SDID=12 AND DEL_FLAG = 0   GROUP BY (F_SDID)) A",
 				sql1,sql2,
-				"SELECT * FROM AA WHERE ID = 'ASDF\\'ADF'",
+				 "UPDATE `uc_app_game`.`sdo_admin_user` SET `usr_sumlogin`=(`usr_sumlogin`+1),`usr_loginip`=1034744162 WHERE `usr_id`=? LIMIT 1,?",
+
+				"select ID from SD_MESSAGE.MESSAGE_NOTIFICATION  where  SDID=11 order by CREATE_TIME limit ?,?",
+				"SELECT /*  #pool */ * FROM AA WHERE ID = 'ASDF\\'ADF'",
 				"SELECT '1997-12-31 23:59:59' + INTERVAL 1 MICROSECOND",
 				"SELECT *,asdf from dd where id = hour('11:12:11.123451')",
 				"SELECT 2 mod 9",
@@ -83,12 +89,17 @@ public class MysqlParserTest {
 				"SELECT groupid, type, grouptitle FROM cdb_usergroups ORDER BY (creditshigher<>'0' || creditslower<>'0'), creditslower;",
 				"SELECT uid, COUNT(*) AS count FROM cdb_sessions GROUP BY uid='0';",
 				"(select help_topic_id ,name from mysql.help_topic where help_topic_id=53 order by help_category_id desc limit 2) union all (select help_topic_id ,name from mysql.help_topic where help_topic_id=47 order by help_category_id desc limit 2) union all (select help_topic_id ,name from mysql.help_topic where help_topic_id=53 order by help_category_id desc limit 2) union all (select help_topic_id ,name from mysql.help_topic where help_topic_id=47 order by help_category_id desc limit 2)",
-				"select version();",
+				"select version() * 100;",
 				"SELECT * FROM bbs_doing USE INDEX(dateline) WHERE 1 ORDER BY dateline DESC LIMIT 0,20;",
-				"SELECT * FROM TABLE1 force INDEX (FIELD1, FIELD2)",
+				"SELECT * FROM TABLE1 force INDEX (ss)",
 				"SELECT FOUND_ROWS()",
-				"SELECT `user_base`.`user_id`, `user_base`.`email`, `user_base`.`fullname`, `user_base`.`gender`, `user_base`.`status_content`, `user_base`.`status_update_time`, `user_base`.`tower_id`, `user_base`.`city_domain` FROM `user_base` ORDER BY `user_base`.`user_id` DESC LIMIT 100 OFFSET 100"
-				//,"/* mysql-connector-java-5.1.6 ( Revision: ${svn.Revision} ) */SHOW VARIABLES WHERE Variable_name =’language’ OR Variable_name = ‘net_write_timeout’ OR Variable_name = ‘interactive_timeout’ OR Variable_name = ‘wait_timeout’ OR Variable_name = ‘character_set_client’ OR Variable_name = ‘character_set_connection’ OR Variable_name = ‘character_set’ OR Variable_name = ‘character_set_server’ OR Variable_name = ‘tx_isolation’ OR Variable_name = ‘transaction_isolation’ OR Variable_name = ‘character_set_results’ OR Variable_name = ‘timezone’ OR Variable_name = ‘time_zone’ OR Variable_name = ’system_time_zone’ OR Variable_name = ‘lower_case_table_names’ OR Variable_name = ‘max_allowed_packet’ OR Variable_name = ‘net_buffer_length’ OR Variable_name = ’sql_mode’ OR Variable_name = ‘query_cache_type’ OR Variable_name = ‘query_cache_size’ OR Variable_name = ‘init_connect’"
+				"insert into SD_MESSAGE.TOPIC_CONTENT(TOPIC_ID , CREATE_TIME , TOPIC_CONTENT) values ('c10795a20c3242299e669c29b4486958' ,UNIX_TIMESTAMP()*1000 ,'testInertTopic')",
+				"SELECT `user_base`.`user_id`, `user_base`.`email`, `user_base`.`fullname`, `user_base`.`gender`, `user_base`.`status_content`, `user_base`.`status_update_time`, `user_base`.`tower_id`, `user_base`.`city_domain` FROM `user_base` where `user_base` = 1000 ORDER BY `user_base`.`user_id` DESC LIMIT 100 OFFSET 100"
+				,"/* mysql-connector-java-5.1.6 ( Revision: ${svn.Revision} ) */ SHOW VARIABLES WHERE Variable_name ='language' OR Variable_name = 'net_write_timeout' OR Variable_name = 'interactive_timeout' OR Variable_name = 'wait_timeout' OR Variable_name = 'character_set_client' ",
+				"  SELECT RF.F_SDID FROM SD_RELATION.RELATION_FOLLOW AS RF LEFT JOIN SD_RELATION.RELATION_REVERSE AS RR USING (SDID,F_SDID) WHERE RF.SDID=322 AND RF.DEL_FLAG = 0 AND (RR.DEL_FLAG = 1 OR RR.F_SDID IS NULL) GROUP BY (F_SDID);",
+				"INSERT INTO test (a,b) VALUES ('1','2') ON  DUPLICATE  KEY  UPDATE ID=LAST_INSERT_ID(ID),Dummy = 4",
+				"UPDATE `agency`.`property` SET `PropertyID`='2010041131894474                ',`CityName`='南昌',`DistrictName`='东湖',`EstateID`='0706231710370C36FB840B3AFFA0E46D',`RoomNo`='88',`PropertyDirection`='东西',`MgtPrice`=0.0000,`DeptID`='0909291943174B44614C252A03703E88',`EmpID`='04616019F75B4F4B92029C4D5C2B8542',`PropertyFloor`='',`ModPerson`='汲燕丽',`ModDate`=_latin1'2010-04-11 00:21:56',`Privy`=0 WHERE `PropertyID`='2010041131894474' AND `CityName`='南昌' AND `DistrictName`='东湖' AND `EstateID`='0706231710370C36FB840B3AFFA0E46D' AND `RoomNo`='44' AND `PropertyDirection`='东西' AND `MgtPrice`=0.0000 AND `DeptID`='0909291943174B44614C252A03703E88' AND `EmpID`='04616019F75B4F4B92029C4D5C2B8542' AND `PropertyFloor`='' AND `ModPerson`='汲燕丽' AND `ModDate`=_latin1'2010-04-11 00:14:23' AND `Privy`=0",
+				"insert into UC_PROFILE.USER_PROFILE_BASIC (SDID ,AVATAR_VERSION,REGISTER_IP,NICK_LAST_MODIFY_TIME,LEVEL,ACTIVE_FLAG,DEL_FLAG,CREATE_TIME,LAST_MODIFY_TIME,REGISTER_TIME)values (? , ?  ,INET_ATON(?),UNIX_TIMESTAMP()*1000,0,1,0,UNIX_TIMESTAMP()*1000,UNIX_TIMESTAMP()*1000,UNIX_TIMESTAMP()*1000)"
 		};
 		if(args.length == 0){
 			for(String sql: sqls){
@@ -116,14 +127,17 @@ public class MysqlParserTest {
 		Parser parser = new MysqlParser(new StringReader(sql));
 		parser.setFunctionMap(funMap);
 		try {
-			Statment statment = parser.doParse();
-			if(statment instanceof DMLStatment){
-				DMLStatment dmlStatment = (DMLStatment)statment;
+			Statement statment = parser.doParse();
+			if(statment instanceof DMLStatement){
+				DMLStatement dmlStatment = (DMLStatement)statment;
 				Expression expression = dmlStatment.getExpression();
-				System.out.println(sql+" =[ "+ expression+"], evaluated = {"+dmlStatment.evaluate(null)+"}");
-			}else if(statment instanceof PropertyStatment ){
-				PropertyStatment proStatment = (PropertyStatment)statment;
+				System.out.println(sql+" =[ "+ expression+"], evaluated = {"+dmlStatment.evaluate(null,(AbstractStatement)statment)+"} ,parameterCount="+dmlStatment.getParameterCount());
+			}else if(statment instanceof PropertyStatement ){
+				PropertyStatement proStatment = (PropertyStatement)statment;
 				System.out.println(proStatment.getProperties());
+			}else if(statment instanceof ShowStatement){
+				ShowStatement proStatment = (ShowStatement)statment;
+				System.out.println(proStatment.getExpression());
 			}
 			
 		} catch (Exception e) {

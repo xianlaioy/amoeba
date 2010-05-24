@@ -16,135 +16,173 @@
 
 package com.meidusa.amoeba.net.poolable;
 
-/**
- * A pooling interface.
- * <p>
- * <code>ObjectPool</code> defines a trivially simple pooling interface. The only 
- * required methods are {@link #borrowObject borrowObject} and {@link #returnObject returnObject}.
- * <p>
- * Example of use:
- * <table border="1" cellspacing="0" cellpadding="3" align="center" bgcolor="#FFFFFF"><tr><td><pre>
- * Object obj = <font color="#0000CC">null</font>;
- * 
- * <font color="#0000CC">try</font> {
- *    obj = pool.borrowObject();
- *    <font color="#00CC00">//...use the object...</font>
- * } <font color="#0000CC">catch</font>(Exception e) {
- *    <font color="#00CC00">//...handle any exceptions...</font>
- * } <font color="#0000CC">finally</font> {
- *    <font color="#00CC00">// make sure the object is returned to the pool</font>
- *    <font color="#0000CC">if</font>(<font color="#0000CC">null</font> != obj) {
- *       pool.returnObject(obj);
- *    }
- * }</pre></td></tr></table>
- * See {@link org.apache.commons.pool.BaseObjectPool BaseObjectPool} for a simple base implementation.
- *
- * @author Rodney Waldhoff
- * @version $Revision: 155430 $ $Date: 2005-02-26 08:13:28 -0500 (Sat, 26 Feb 2005) $ 
- *
- */
-public interface ObjectPool {
-    /**
-     * Obtain an instance from my pool.
-     * By contract, clients MUST return
-     * the borrowed instance using
-     * {@link #returnObject(java.lang.Object) returnObject}
-     * or a related method as defined in an implementation
-     * or sub-interface.
-     * <p>
-     * The behaviour of this method when the pool has been exhausted
-     * is not specified (although it may be specified by implementations).
-     *
-     * @return an instance from my pool.
-     */
-    Object borrowObject() throws Exception;
+import java.util.Comparator;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.DelayQueue;
+import java.util.concurrent.Delayed;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
-    /**
-     * Return an instance to my pool.
-     * By contract, <i>obj</i> MUST have been obtained
-     * using {@link #borrowObject() borrowObject}
-     * or a related method as defined in an implementation
-     * or sub-interface.
-     *
-     * @param obj a {@link #borrowObject borrowed} instance to be returned.
-     */
-    void returnObject(Object obj) throws Exception;
+import org.apache.log4j.Logger;
 
-    /**
-     * Invalidates an object from the pool
-     * By contract, <i>obj</i> MUST have been obtained
-     * using {@link #borrowObject() borrowObject}
-     * or a related method as defined in an implementation
-     * or sub-interface.
-     * <p>
-     * This method should be used when an object that has been borrowed
-     * is determined (due to an exception or other problem) to be invalid.
-     * If the connection should be validated before or after borrowing,
-     * then the {@link PoolableObjectFactory#validateObject} method should be
-     * used instead.
-     *
-     * @param obj a {@link #borrowObject borrowed} instance to be returned.
-     */
-    void invalidateObject(Object obj) throws Exception;
 
-    /**
-     * Create an object using my {@link #setFactory factory} or other
-     * implementation dependent mechanism, and place it into the pool.
-     * addObject() is useful for "pre-loading" a pool with idle objects.
-     * (Optional operation).
-     */
-    void addObject() throws Exception;
+public interface ObjectPool extends org.apache.commons.pool.ObjectPool {
+	static Logger logger = Logger.getLogger(ObjectPool.class); 
+	static enum STATUS {
+		INVALID, VALID
+	};
+    static class HeartbeatManager{
+    	protected static final BlockingQueue<HeartbeatDelayed> HEART_BEAT_QUEUE = new DelayQueue<HeartbeatDelayed>();
+    	static{
+        new Thread() {
+            {
+                this.setDaemon(true);
+                this.setName("HeartbeatManagerThread");
+            }
 
-    /**
-     * Return the number of instances
-     * currently idle in my pool (optional operation).  
-     * This may be considered an approximation of the number
-     * of objects that can be {@link #borrowObject borrowed}
-     * without creating any new instances.
-     *
-     * @return the number of instances currently idle in my pool
-     * @throws UnsupportedOperationException if this implementation does not support the operation
-     */
-    int getNumIdle() throws UnsupportedOperationException;
+            public void run() {
+                HeartbeatDelayed delayed = null;
+                while (true) {
+                	try{
+                        delayed = HEART_BEAT_QUEUE.take();
+                        STATUS status = delayed.doCheck();
+                        if(logger.isDebugEnabled()){
+                        	logger.debug("checked Pool poolName="+delayed.getPool().getName()+" ,Status="+status);
+                        }
+                        if (status == STATUS.INVALID) {
+                            //delayed.setDelayedTime(5, TimeUnit.SECONDS);
+                        	if(!delayed.isCycle()){
+                        		delayed.reset();
+                        		HeartbeatManager.addHeartbeat(delayed);
+                        	}
+                        }
+                        
+                        if(delayed.isCycle()){
+                        	delayed.reset();
+                        	HeartbeatManager.addHeartbeat(delayed);
+                        }
+                	}catch(Exception e){
+                		logger.error("check pool error",e);
+                	}
+                }
+            }
+        }.start();
+    	}
+    	
+    	public static void addHeartbeat(HeartbeatDelayed delay){
+    		if(!HEART_BEAT_QUEUE.contains(delay)){
+    			HEART_BEAT_QUEUE.offer(delay);
+    		}
+    	}
+    }
 
-    /**
-     * Return the number of instances
-     * currently borrowed from my pool 
-     * (optional operation).
-     *
-     * @return the number of instances currently borrowed in my pool
-     * @throws UnsupportedOperationException if this implementation does not support the operation
-     */
-    int getNumActive() throws UnsupportedOperationException;
+    public static class ActiveNumComparator implements Comparator<ObjectPool> {
 
-    /**
-     * Clears any objects sitting idle in the pool, releasing any
-     * associated resources (optional operation).
-     *
-     * @throws UnsupportedOperationException if this implementation does not support the operation
-     */
-    void clear() throws Exception, UnsupportedOperationException;
+        public int compare(ObjectPool o1, ObjectPool o2) {
+            return o1.getNumActive() - o2.getNumActive();
+        }
+    }
 
-    /**
-     * Close this pool, and free any resources associated with it.
-     */
-    void close() throws Exception;
+	public static class HeartbeatDelayed implements Delayed {
 
-    /**
-     * Sets the {@link PoolableObjectFactory factory} I use
-     * to create new instances (optional operation).
-     * @param factory the {@link PoolableObjectFactory} I use to create new instances.
-     *
-     * @throws IllegalStateException when the factory cannot be set at this time
-     * @throws UnsupportedOperationException if this implementation does not support the operation
-     */
-    void setFactory(PoolableObjectFactory factory) throws IllegalStateException, UnsupportedOperationException;
-    
-    /**
-     * return this pool enabled/disabled status
-     * @return
-     */
-    boolean isEnable();
-    
-    void setEnable(boolean isEnabled);
+        private long                          time;
+        /** Sequence number to break ties FIFO */
+        private final long                    sequenceNumber;
+        private long                          nano_origin = System.nanoTime();
+        private static final AtomicLong       sequencer   = new AtomicLong(0);
+        private ObjectPool                    pool;
+        private long nextFireTime = nano_origin;
+        
+        public boolean isCycle(){
+        	return false;
+        }
+        
+        public ObjectPool getPool() {
+			return pool;
+		}
+
+		public HeartbeatDelayed(long nsTime, TimeUnit timeUnit, ObjectPool pool){
+            this.time = TimeUnit.NANOSECONDS.convert(nsTime, timeUnit);
+            this.pool = pool;
+            this.sequenceNumber = sequencer.getAndIncrement();
+            nextFireTime = time + nano_origin;
+        }
+
+	    public boolean equals(Object obj) {
+	    	if(obj instanceof HeartbeatDelayed){
+	    		HeartbeatDelayed other = (HeartbeatDelayed)obj;
+	    		return other.pool == this.pool && this.getClass() == obj.getClass();
+	    	}else{
+	    		return false;
+	    	}
+        }
+	    
+	    public int hashCode(){
+	    	return pool == null?this.getClass().hashCode():this.getClass().hashCode() + pool.hashCode();
+	    }
+	    
+        public void setDelayedTime(long time, TimeUnit timeUnit) {
+            nano_origin = System.nanoTime();
+            this.time = TimeUnit.NANOSECONDS.convert(time, timeUnit);
+            nextFireTime = time + nano_origin;
+        }
+        
+        public void reset(){
+        	nano_origin = System.nanoTime();
+        	nextFireTime = time + nano_origin;
+        }
+
+        public long getDelay(TimeUnit unit) {
+            long d = unit.convert(time - now(), TimeUnit.NANOSECONDS);
+            return d;
+        }
+        
+        public STATUS doCheck() {
+			if(pool.validate()){
+				pool.setValid(true);
+				return STATUS.VALID;
+			}else{
+				pool.setValid(false);
+				return STATUS.INVALID;
+			}
+        }
+
+        public int compareTo(Delayed other) {
+            if (other == this) // compare zero ONLY if same object
+            return 0;
+            HeartbeatDelayed x = (HeartbeatDelayed) other;
+            long diff = nextFireTime - x.nextFireTime;
+            if (diff < 0) return -1;
+            else if (diff > 0) return 1;
+            else if (sequenceNumber < x.sequenceNumber) return -1;
+            else return 1;
+        }
+
+        /**
+         * Returns nanosecond time offset by origin
+         */
+        final long now() {
+            return System.nanoTime() - nano_origin;
+        }
+
+	}
+
+	/**
+	 * return this pool enabled/disabled status
+	 * 
+	 * @return
+	 */
+	boolean isEnable();
+
+	void setEnable(boolean isEnabled);
+
+	boolean isValid();
+	
+	void setValid(boolean valid);
+	
+	public boolean validate();
+	
+	public String getName();
+	
+	public void setName(String name);
 }

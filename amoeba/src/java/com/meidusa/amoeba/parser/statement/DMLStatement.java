@@ -11,7 +11,7 @@
  * if not, write to the Free Software Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * </pre>
  */
-package com.meidusa.amoeba.parser.statment;
+package com.meidusa.amoeba.parser.statement;
 
 import java.util.HashMap;
 import java.util.List;
@@ -33,15 +33,30 @@ import com.meidusa.amoeba.sqljep.function.ComparativeOR;
 /**
  * @author <a href=mailto:piratebase@sina.com>Struct chen</a>
  */
-public abstract class DMLStatment extends AbstractStatment {
+public abstract class DMLStatement extends AbstractStatement {
 
-    private static Logger                        logger = Logger.getLogger(DMLStatment.class);
+    private static Logger                        logger = Logger.getLogger(DMLStatement.class);
     protected boolean                            preparedStatment;
-    protected Table[]                            tables;
+    
     protected Expression                         expression;
     private Map<Table, Map<Column, Comparative>> evaluatedTableMap;
-
-    public abstract boolean isReadStatment();
+    private Map<String,Column> selectColumnMap = new HashMap<String,Column>();
+    protected String sql;
+    public void setSql(String sql) {
+		this.sql = sql;
+	}
+	public String getSql(){
+		return sql;
+	}
+	
+	public void addSelectColumn(String key,Column value){
+		selectColumnMap.put(key, value);
+	}
+	
+    public Map<String, Column> getSelectColumnMap() {
+		return selectColumnMap;
+	}
+	public abstract boolean isReadStatement();
 
     public void setExpression(Expression expression) {
         this.expression = expression;
@@ -49,14 +64,6 @@ public abstract class DMLStatment extends AbstractStatment {
 
     public Expression getExpression() {
         return expression;
-    }
-
-    public Table[] getTables() {
-        return tables;
-    }
-
-    public void setTables(Table[] tables) {
-        this.tables = tables;
     }
 
     public boolean isPreparedStatment() {
@@ -67,7 +74,7 @@ public abstract class DMLStatment extends AbstractStatment {
         this.preparedStatment = preparedStatment;
     }
 
-    public Map<Table, Map<Column, Comparative>> evaluate(Object[] parameters) {
+    public Map<Table, Map<Column, Comparative>> evaluate(Object[] parameters,AbstractStatement statment) {
         Map<Table, Map<Column, Comparative>> currentEvaluatedTableMap = null;
         if (this.evaluatedTableMap == null) {
             currentEvaluatedTableMap = new HashMap<Table, Map<Column, Comparative>>();
@@ -76,10 +83,12 @@ public abstract class DMLStatment extends AbstractStatment {
                 if (logger.isDebugEnabled()) {
                     logger.debug("expression:[" + expression + "] evaluated");
                 }
-            } else {
-                for (Table table : getTables()) {
-                    currentEvaluatedTableMap.put(table, null);
-                }
+            } 
+            
+            for (Table table : getTables()) {
+            	if(currentEvaluatedTableMap.get(table) == null){
+            		currentEvaluatedTableMap.put(table, null);
+            	}
             }
 
             if (expression == null || !expression.isRealtime()) {
@@ -105,6 +114,8 @@ public abstract class DMLStatment extends AbstractStatment {
             }
             columnMap.put(colExpression.getColumn(), (Comparative) colExpression.evaluate(parameters));
         }
+        
+        
     }
 
     protected static void evaluateExpression(BaseExpressionList elist, Map<Table, Map<Column, Comparative>> tablesMap,
@@ -129,14 +140,30 @@ public abstract class DMLStatment extends AbstractStatment {
                 Comparative col = columnMap.get(colExpression.getColumn());
                 Comparative newComparative = (Comparative) colExpression.evaluate(parameters);
                 if (col != null) {
-                    ComparativeBaseList comparativeBaseList = null;
-                    if (and) {
-                        comparativeBaseList = new ComparativeAND(col);
-                    } else {
-                        comparativeBaseList = new ComparativeOR(col);
-                    }
-                    comparativeBaseList.addComparative(newComparative);
-                    columnMap.put(colExpression.getColumn(), comparativeBaseList);
+                	if(col instanceof ComparativeBaseList){
+                		ComparativeBaseList source = (ComparativeBaseList)col;
+                		if((source instanceof ComparativeAND && and) || (source instanceof ComparativeOR && !and)){
+                			source.addComparative(newComparative);
+                		}else{
+                			ComparativeBaseList comparativeBaseList = null;
+    	                    if (and) {
+    	                        comparativeBaseList = new ComparativeAND(col);
+    	                    } else {
+    	                        comparativeBaseList = new ComparativeOR(col);
+    	                    }
+    	                    comparativeBaseList.addComparative(newComparative);
+    	                    columnMap.put(colExpression.getColumn(), comparativeBaseList);
+                		}
+                	}else{
+	                    ComparativeBaseList comparativeBaseList = null;
+	                    if (and) {
+	                        comparativeBaseList = new ComparativeAND(col);
+	                    } else {
+	                        comparativeBaseList = new ComparativeOR(col);
+	                    }
+	                    comparativeBaseList.addComparative(newComparative);
+	                    columnMap.put(colExpression.getColumn(), comparativeBaseList);
+                	}
                 } else {
                     columnMap.put(colExpression.getColumn(), newComparative);
                 }

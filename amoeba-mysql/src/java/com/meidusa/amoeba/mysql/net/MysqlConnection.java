@@ -50,15 +50,6 @@ public abstract class MysqlConnection extends DatabaseConnection {
         out.put(msg);
         out.flip();*/
         _outQueue.append(ByteBuffer.wrap(msg));
-        _cmgr.invokeConnectionWriteMessage(this);
+        writeMessage();
     }
-	
-	public String toString(){
-		try{
-			return this.getClass().getName()+"@"+(this.getChannel()!= null?this.getChannel().socket().toString():"not connected")+", hashcode="+this.hashCode();
-		}catch(Exception e){
-			return super.toString();
-		}
-	}
-
 }

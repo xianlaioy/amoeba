@@ -275,6 +275,22 @@ public class StringUtil {
         }
         return buffer.toString();
     }
+    
+    public static String toString(Object[] objs) {
+        if (objs == null || objs.length == 0) return "[]";
+        StringBuffer buffer = new StringBuffer("[");
+        for(int i=0;i<objs.length;i++){
+        	buffer.append(String.valueOf(objs[i]));
+        	if(i!=objs.length-1){
+        		buffer.append(",");
+        	}
+        }
+        
+        buffer.append("]");
+        return buffer.toString();
+    }
+    
+    
 
     /**
      * 比较两个字符串（大小写敏感）。
