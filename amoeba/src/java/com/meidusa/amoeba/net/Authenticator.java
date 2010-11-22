@@ -15,35 +15,34 @@ package com.meidusa.amoeba.net;
 
 import org.apache.log4j.Logger;
 
-import com.meidusa.amoeba.context.ProxyRuntimeContext;
 import com.meidusa.amoeba.data.AuthCodes;
+import com.meidusa.amoeba.net.packet.AbstractPacket;
 import com.meidusa.amoeba.server.AuthenticateFilter;
 
 /**
  * @author <a href=mailto:piratebase@sina.com>Struct chen</a>
  */
-public abstract class Authenticator {
+@SuppressWarnings("unchecked")
+public abstract class Authenticator<T extends AbstractPacket> {
 
     protected static Logger                log = Logger.getLogger(Authenticator.class);
     private AuthenticateFilter             filter;
-    protected AuthingableConnectionManager _conmgr;
-
-    public void setConnectionManager(AuthingableConnectionManager conmgr) {
-        _conmgr = conmgr;
-    }
-
-    public void authenticateConnection(final AuthingableConnection conn) {
+    public boolean authenticateConnection(final AuthingableConnection conn,T authenPacket) {
         final AuthResponseData rdata = createResponseData();
         try {
             if (doFilte(conn, rdata)) {
-                processAuthentication(conn, rdata);
+                processAuthentication(conn, authenPacket,rdata);
+                return true;
+            }else{
+            	return false;
             }
         } catch (Exception e) {
             log.warn("Error authenticating", e);
             rdata.code = AuthCodes.SERVER_ERROR;
             rdata.message = e.getMessage();
+            return false;
         } finally {
-            _conmgr.afterAuthing(conn, rdata);
+        	conn.afterAuthing(rdata);
         }
     }
 
@@ -69,5 +68,5 @@ public abstract class Authenticator {
      * @param conn 需要身份验证的连接
      * @param rdata 需要反馈的数据
      */
-    protected abstract void processAuthentication(AuthingableConnection conn, AuthResponseData rdata);
+    protected abstract void processAuthentication(AuthingableConnection conn,T authenPacket,AuthResponseData rdata);
 }

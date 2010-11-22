@@ -14,7 +14,6 @@
 package com.meidusa.amoeba.net;
 
 import java.io.IOException;
-import java.net.SocketException;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -27,13 +26,13 @@ import java.util.Set;
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 
-import com.meidusa.amoeba.context.ProxyRuntimeContext;
 import com.meidusa.amoeba.data.ConMgrStats;
 import com.meidusa.amoeba.util.Initialisable;
 import com.meidusa.amoeba.util.InitialisationException;
 import com.meidusa.amoeba.util.LoopingThread;
 import com.meidusa.amoeba.util.Queue;
 import com.meidusa.amoeba.util.Reporter;
+import com.meidusa.amoeba.util.StringUtil;
 import com.meidusa.amoeba.util.Tuple;
 
 /**
@@ -45,12 +44,12 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
     protected static final int                       SELECT_LOOP_TIME                = 100;
 
     // codes for notifyObservers()
-    protected static final int                       CONNECTION_ESTABLISHED          = 0;
+    public static final int                       CONNECTION_ESTABLISHED          = 0;
 
-    protected static final int                       CONNECTION_FAILED               = 1;
-    protected static final int                       CONNECTION_CLOSED               = 2;
-    protected static final int                       CONNECTION_AUTHENTICATE_SUCCESS = 3;
-    protected static final int                       CONNECTION_AUTHENTICATE_FAILD   = 4;
+    public static final int                       CONNECTION_FAILED               = 1;
+    public static final int                       CONNECTION_CLOSED               = 2;
+    public static final int                       CONNECTION_AUTHENTICATE_SUCCESS = 3;
+    public static final int                       CONNECTION_AUTHENTICATE_FAILD   = 4;
 
     protected Selector                               _selector;
 
@@ -82,10 +81,10 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
 	}
 
 	public void appendReport(StringBuilder report, long now, long sinceLast, boolean reset, Level level) {
-        report.append("* ").append(this.getName()).append("\n");
-        report.append("- Registed Connection size: ").append(_selector.keys().size()).append("\n");
-        report.append("- created Connection size: ").append(_stats.connects.get()).append("\n");
-        report.append("- disconnect Connection size: ").append(_stats.disconnects.get()).append("\n");
+        report.append("* ").append(this.getName()).append(StringUtil.LINE_SEPARATOR);
+        report.append("- Registed Connection size: ").append(_selector.keys().size()).append(StringUtil.LINE_SEPARATOR);
+        report.append("- created Connection size: ").append(_stats.connects.get()).append(StringUtil.LINE_SEPARATOR);
+        report.append("- disconnect Connection size: ").append(_stats.disconnects.get()).append(StringUtil.LINE_SEPARATOR);
         if (reset) {
             _stats = new ConMgrStats();
         }
@@ -131,8 +130,8 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
                     // this will queue the connection for closure on our next tick
                     if (handler instanceof Connection) {
                     	Connection conn = (Connection) handler;
-                    	long idlesecond = (iterStamp - conn._lastEvent)/1000;
-                    	logger.warn("Disconnecting non-communicative server [manager=" + this + " conn="+conn.toString()+", socket closed!" +", idle=" + idlesecond + " s]. life="+((System.currentTimeMillis()-conn._createTime)/1000) +" s");
+                    	long idlesecond = (iterStamp - conn._lastEvent);
+                    	logger.warn("Disconnecting non-communicative server [manager=" + this + " conn="+conn.toString()+", socket closed!" +", idle=" + idlesecond + " ms]. life="+((System.currentTimeMillis()-conn._createTime)) +" ms");
                     	
                         closeConnection((Connection) handler, null);
                     }
@@ -145,8 +144,9 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
         while ((registerHandler = _registerQueue.getNonBlocking()) != null) {
             if (registerHandler.left instanceof Connection) {
                 Connection connection = (Connection) registerHandler.left;
-                this.registerConnection(connection, registerHandler.right.intValue());
-                _handlers.add(connection);
+               if( this.registerConnection(connection, registerHandler.right.intValue())){
+            	   _handlers.add(connection);
+               }
             } else {
                 _handlers.add(registerHandler.left);
             }
@@ -180,7 +180,7 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
             // orderly fashion
             logger.warn("Failure select()ing.", re);
             if (_runtimeExceptionCount++ >= 20) {
-                logger.warn("Too many errors, bailing.");
+                logger.error("Too many errors, bailing.");
                 shutdown();
             }
             return;
@@ -197,23 +197,30 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
                 selkey.cancel();
                 continue;
             }
-
-            if (selkey.isWritable()) {
-                try {
-                    boolean finished = handler.doWrite();
-                    if (finished) {
-                        selkey.interestOps(selkey.interestOps() & ~SelectionKey.OP_WRITE);
-                    }
-                } catch (Exception e) {
-                    logger.warn("Error processing network data: " + handler + ".", e);
-                    if (handler != null && handler instanceof Connection) {
-                        closeConnection((Connection) handler, e);
-                    }
-                }
+            
+            if(!selkey.isValid()){
+            	 if (handler != null && handler instanceof Connection) {
+                     closeConnection((Connection) handler,null);
+                     continue;
+                 }
             }
             
-            if (selkey.isReadable() || selkey.isAcceptable()) {
-            	handler.handleEvent(iterStamp);
+            try {
+	            if (selkey.isWritable()) {
+	                    boolean finished = handler.doWrite();
+	                    if (finished) {
+	                        selkey.interestOps(selkey.interestOps() & ~SelectionKey.OP_WRITE);
+	                    }
+	            }
+	            
+	            if (selkey.isReadable() || selkey.isAcceptable()) {
+	            	handler.handleEvent(iterStamp);
+	            }
+            } catch (Exception e) {
+                logger.warn("Error processing network data: " + handler + ".", e);
+                if (handler != null && handler instanceof Connection) {
+                    closeConnection((Connection) handler, e);
+                }
             }
         }
 
@@ -296,7 +303,7 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
     /**
      * 往ConnectionManager 增加一个SocketChannel
      */
-    protected void registerConnection(Connection connection, int key) {
+    protected boolean registerConnection(Connection connection, int key) {
         SocketChannel channel = connection.getChannel();
         if (logger.isDebugEnabled()) {
             logger.debug("[" + this.getName() + "] registed Connection[" + connection.toString() + "] connected!");
@@ -313,7 +320,7 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
                 if (channel != null) {
                     channel.socket().close();
                 }
-                return;
+                return false;
             }
 
             SelectableChannel selchan = (SelectableChannel) channel;
@@ -321,11 +328,10 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
             selkey = selchan.register(_selector, key, connection);
             connection.setConnectionManager(this);
             connection.setSelectionKey(selkey);
-            configConnection(connection);
             _stats.connects.incrementAndGet();
             connection.init();
             _selector.wakeup();
-            return;
+            return true;
         } catch (IOException ioe) {
             logger.error("register connection error: " + ioe);
         }
@@ -343,13 +349,9 @@ public class ConnectionManager extends LoopingThread implements Reporter, Initia
                 logger.warn("Failed closing aborted connection: " + ioe);
             }
         }
+        return false;
     }
 
-    protected void configConnection(Connection connection) throws SocketException {
-        connection.getChannel().socket().setSendBufferSize(ProxyRuntimeContext.getInstance().getConfig().getNetBufferSize() * 1024);
-        connection.getChannel().socket().setReceiveBufferSize(ProxyRuntimeContext.getInstance().getConfig().getNetBufferSize() * 1024);
-        connection.getChannel().socket().setTcpNoDelay(ProxyRuntimeContext.getInstance().getConfig().isTcpNoDelay());
-    }
 
     /**
      * 当 Connection 关闭以后

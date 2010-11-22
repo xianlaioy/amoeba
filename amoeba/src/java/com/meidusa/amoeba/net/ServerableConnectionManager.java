@@ -23,49 +23,42 @@ import java.nio.channels.SocketChannel;
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 
+import com.meidusa.amoeba.runtime.Shutdowner;
+import com.meidusa.amoeba.service.Service;
+
 /**
  * 指定一个端口,创建一个serverSocket. 将该ServerSocket所创建的Connection加入管理
  * 该manager只负责socket accept netEvent,socket的 IO netEvent 由 {@link ServerableConnectionManager#connMgr} 负责
  * 
  * @author <a href=mailto:piratebase@sina.com>Struct chen</a>
  */
-public class ServerableConnectionManager extends ConnectionManager {
+public class ServerableConnectionManager extends AuthingableConnectionManager implements Shutdowner, Service{
 
     protected static Logger       log = Logger.getLogger(ServerableConnectionManager.class);
-
+    
     protected int                 port;
     protected ServerSocketChannel ssocket;
     protected String              ipAddress;
     protected ConnectionFactory   connFactory;
-    private ConnectionManager connMgr;
+    private ConnectionManager manager;
+    private int backlog = 128;
+    public ConnectionManager getManager() {
+		return manager;
+	}
 
-    public ServerableConnectionManager(ConnectionManager connMgr) throws IOException{
-    	this.connMgr = connMgr;
+	public void setManager(ConnectionManager manager) {
+		this.manager = manager;
+	}
+
+	public ServerableConnectionManager() throws IOException{
     	this.setDaemon(false);
-    }
-
-    public ServerableConnectionManager(String name, int port,ConnectionManager connMgr) throws IOException{
-    	super(name);
-    	this.port = port;
-    	this.connMgr = connMgr;
-    	this.setDaemon(false);
-    }
-
-    public ServerableConnectionManager(String name, String ipAddress, int port,ConnectionManager connMgr) throws IOException{
-        super(name);
-        this.port = port;
-        this.ipAddress = ipAddress;
-        this.connMgr = connMgr;
-        this.setDaemon(false);
     }
 
     public void setConnectionFactory(ConnectionFactory connFactory) {
         this.connFactory = connFactory;
     }
 
-    // documentation inherited
-    protected void willStart() {
-        super.willStart();
+    protected void initServerSocket(){
         try {
             // create a listening socket and add it to the select set
             ssocket = ServerSocketChannel.open();
@@ -78,18 +71,26 @@ public class ServerableConnectionManager extends ConnectionManager {
                 isa = new InetSocketAddress(port);
             }
 
-            ssocket.socket().bind(isa);
+            ssocket.socket().bind(isa,this.backlog);
             registerServerChannel(ssocket);
 
             Level level = log.getLevel();
             log.setLevel(Level.INFO);
-            log.info("Server listening on " + isa + ".");
+            log.info(this.getName()+" listening on " + isa + ".");
             log.setLevel(level);
 
         } catch (IOException ioe) {
             log.error("Failure listening to socket on port '" + port + "'.", ioe);
+            System.err.println("Failure listening to socket on port '" + port + "'.");
+            ioe.printStackTrace();
             System.exit(-1);
         }
+    }
+    
+    // documentation inherited
+    protected void willStart() {
+        super.willStart();
+        initServerSocket();
     }
 
     protected void registerServerChannel(final ServerSocketChannel listener) throws IOException {
@@ -102,7 +103,10 @@ public class ServerableConnectionManager extends ConnectionManager {
             private SelectionKey key;
 
             public int handleEvent(long when) {
-                acceptConnection(listener);
+            	Connection conn = null;
+                do{
+                	conn = acceptConnection(listener);
+                }while(conn != null);
                 return 0;
             }
 
@@ -126,16 +130,17 @@ public class ServerableConnectionManager extends ConnectionManager {
         serverNetEvent.setSelectionKey(sk);
         postRegisterNetEventHandler(serverNetEvent, SelectionKey.OP_ACCEPT);
     }
-
-    protected void acceptConnection(ServerSocketChannel listener) {
+    
+    protected Connection acceptConnection(ServerSocketChannel listener) {
         SocketChannel channel = null;
         try {
             channel = listener.accept();
             if (channel == null) {
-                log.info("Psych! Got ACCEPT_READY, but no connection.");
-                return;
+        		if(log.isDebugEnabled()){
+        			log.debug("Psych! Got ACCEPT_READY, but no connection.");
+        		}
+                return null;
             }
-
             if (!(channel instanceof SelectableChannel)) {
                 try {
                     log.warn("Provided with un-selectable socket as result of accept(), can't " + "cope [channel=" + channel + "].");
@@ -144,10 +149,20 @@ public class ServerableConnectionManager extends ConnectionManager {
                 }
                 // stick a fork in the socket
                 channel.socket().close();
-                return;
+                return null;
             }
             Connection connection = connFactory.createConnection(channel, System.currentTimeMillis());
-            connMgr.postRegisterNetEventHandler(connection,SelectionKey.OP_READ);
+            if(connection instanceof AuthingableConnection){
+            	((AuthingableConnection)connection).setAuthenticator(this.getAuthenticator());
+            	((AuthingableConnection)connection).beforeAuthing();
+            }
+            
+            if(manager != null){
+            	manager.postRegisterNetEventHandler(connection,SelectionKey.OP_READ);
+            }else{
+            	this.postRegisterNetEventHandler(connection,SelectionKey.OP_READ);
+            }
+            return connection;
         } catch (Exception e) {
             if (channel != null) {
                 try {
@@ -156,6 +171,7 @@ public class ServerableConnectionManager extends ConnectionManager {
                     log.warn("Failed closing aborted connection: " + ioe);
                 }
             }
+            return null;
         }
     }
 
@@ -182,5 +198,29 @@ public class ServerableConnectionManager extends ConnectionManager {
     public void setIpAddress(String ipAddress) {
         this.ipAddress = ipAddress;
     }
+    
+    public int getBacklog() {
+		return backlog;
+	}
 
+	public void setBacklog(int backlog) {
+		this.backlog = backlog;
+	}
+
+    public void shutdown(){
+    	Level level = log.getLevel();
+        log.setLevel(Level.INFO);
+    	super.shutdown();
+    	try {
+			ssocket.close();
+		} catch (IOException e) {
+		}
+    	log.warn(this.getName()+" shutdown completed!");
+    	log.setLevel(level);
+    }
+
+	@Override
+	public int getShutdownPriority() {
+		return 10;
+	}
 }

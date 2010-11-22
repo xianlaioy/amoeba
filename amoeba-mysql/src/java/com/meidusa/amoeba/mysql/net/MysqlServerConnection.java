@@ -18,7 +18,8 @@ import org.apache.log4j.Logger;
 
 import com.meidusa.amoeba.net.poolable.ObjectPool;
 import com.meidusa.amoeba.net.poolable.PoolableObject;
-import com.meidusa.amoeba.mysql.context.MysqlProxyRuntimeContext;
+import com.meidusa.amoeba.context.ProxyRuntimeContext;
+import com.meidusa.amoeba.mysql.context.MysqlRuntimeContext;
 import com.meidusa.amoeba.mysql.io.MySqlPacketConstant;
 import com.meidusa.amoeba.mysql.net.packet.AuthenticationPacket;
 import com.meidusa.amoeba.mysql.net.packet.ErrorPacket;
@@ -78,11 +79,14 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 					setAuthenticated(false);
 					ErrorPacket error = new ErrorPacket();
 					error.init(message,conn);
-					logger.error("handShake with "+this._channel.socket().getRemoteSocketAddress()+" error:"+error.serverErrorMessage);
+					logger.error("handShake with "+this._channel.socket().getRemoteSocketAddress()+" error:"+error.serverErrorMessage+",hashCode="+this.hashCode());
 					return;
 				}
 				
 				if(status == Status.WAITE_HANDSHAKE){
+					if(logger.isDebugEnabled()){
+						logger.debug("1. handShake with "+this.getSocketId()+",hashCode="+this.hashCode());
+					}
 					HandshakePacket handpacket = new HandshakePacket();
 					handpacket.init(buffer);
 					this.serverCapabilities = handpacket.serverCapabilities;
@@ -94,9 +98,9 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 			        }
 			        
 					if(logger.isDebugEnabled()){
-						logger.debug("receive HandshakePacket packet from server:"+this.host +":"+this.port);
+						logger.debug("2. receive HandshakePacket packet from server:"+this.getSocketId()+",hashCode="+this.hashCode());
 					}
-					MysqlProxyRuntimeContext context = ((MysqlProxyRuntimeContext)MysqlProxyRuntimeContext.getInstance());
+					MysqlRuntimeContext context = (MysqlRuntimeContext)ProxyRuntimeContext.getInstance().getRuntimeContext();
 					if(context.getServerCharset() == null && handpacket.serverCharsetIndex > 0){
 						context.setServerCharsetIndex(handpacket.serverCharsetIndex);
 						logger.info("mysql server Handshake= "+handpacket.toString());
@@ -156,12 +160,12 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 					
 					status = Status.AUTHING;
 					if(logger.isDebugEnabled()){
-						logger.debug("authing packet sent to server:"+this.host +":"+this.port);
+						logger.debug("3. authing packet sent to server:"+this.getSocketId()+",hashCode="+this.hashCode());
 					}
-					this.postMessage(authing.toByteBuffer(conn).array());
+					this.postMessage(authing.toByteBuffer(conn));
 				}else if(status == Status.AUTHING){
 					if(logger.isDebugEnabled()){
-						logger.debug("authing result packet from server:"+this.host +":"+this.port);
+						logger.debug("4. authing result packet from server:"+this.getSocketId()+",hashCode="+this.hashCode());
 					}
 					
 					if(MysqlPacketBuffer.isOkPacket(message)){
@@ -173,14 +177,16 @@ public class MysqlServerConnection extends MysqlConnection implements MySqlPacke
 							packet.packetId = 3;
 							packet.seed323 = this.seed.substring(0, 8);
 							packet.password = this.getPassword();
-							this.postMessage(packet.toByteBuffer(conn).array());
+							this.postMessage(packet.toByteBuffer(conn));
 							if(logger.isDebugEnabled()){
-								logger.debug("server request scrambled password in old format");
+								logger.debug("5. server request scrambled password in old format"+",hashCode="+this.hashCode());
 							}
 						}else{
-							logger.warn("server response packet from :"+this._channel.socket().getRemoteSocketAddress()+" :\n"+StringUtil.dumpAsHex(message, message.length),new Exception());
+							logger.warn("5. server response packet from :"+this.getSocketId()+" :\n"+StringUtil.dumpAsHex(message, message.length)+",hashCode="+this.hashCode(),new Exception());
 						}
 					}
+				}else{
+					logger.error("handShake with "+this._channel.socket().getRemoteSocketAddress()+" stat:"+status);
 				}
 	
 			}else{

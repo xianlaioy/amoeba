@@ -20,6 +20,7 @@ import com.meidusa.amoeba.parser.expression.Expression;
  *
  */
 public interface Statement {
+	public boolean isPrepared();
 	public Expression getExpression();
 	public void setParameterCount(int count);
 	public int getParameterCount();

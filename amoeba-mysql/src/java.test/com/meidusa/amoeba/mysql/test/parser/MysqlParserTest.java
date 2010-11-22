@@ -12,7 +12,6 @@ import java.util.Map;
 
 import com.meidusa.amoeba.parser.Parser;
 import com.meidusa.amoeba.parser.dbobject.Column;
-import com.meidusa.amoeba.parser.statement.AbstractStatement;
 import com.meidusa.amoeba.parser.statement.DMLStatement;
 import com.meidusa.amoeba.parser.statement.PropertyStatement;
 import com.meidusa.amoeba.parser.statement.ShowStatement;
@@ -29,6 +28,12 @@ public class MysqlParserTest {
 	static Map<Column,Comparative> columnMap = new HashMap<Column,Comparative>();
 	public static void main(String[] args) throws Exception{
 		Map<String,Function> funMap = AbstractQueryRouter.loadFunctionMap("./build/build-mysql/conf/functionMap.xml");
+		parser(funMap,"delete from aa where id=11 limit 100,?");
+		parser(funMap,"select ID, SDID, APP_ID, PHOTO_ID, ALBUM_ID, IMAGE_NAME, DESCRIPTION, BROWSE_COUNT, SHARE_COUNT,       REVIEW_COUNT, IMPRESSION_COUNT, SHAREABLE, REVIEWABLE, AUDIT_RESULT, HAS_EXIF, CAPACITY, SIZE,       UPLOAD_IP, LOCATION, CREATE_TIME, LAST_MODIFY_TIME, TAG1, IMAGE_PATH_VERSION, IMAGE_BASE_URL,       FORMAL ,FILE_TYPE ,PRIVILEGE,\"\" as EXIF,DEL_FLAG     from SD_PHOTO.IMAGE     where SDID=1250873924 AND DEL_FLAG = 0                      AND          PRIVILEGE & 1 =1                    AND APP_ID IN (    '8'      )                   ORDER BY  CREATE_TIME DESC                   LIMIT 0,30");
+		parser(funMap,"select i.id,i.title,i.img_url,i.link,i.`order`,i.type_id from imgdemo AS i where display_type=1 and type_id=9 order by i.`order`");
+		parser(funMap,"SELECT `n`.*, `au`.`user_true_name`, `ct`.`type_name` FROM `content` AS `n` JOIN `admin_user` AS `au` ON (`n`.`author` = `au`.`user_id`) JOIN `content_type` AS `ct` ON (`n`.`content_type` = `ct`.`type_id`) WHERE `content_type` = 15 AND `n`.`status` = 1 ORDER BY `n`.`content_type` ASC, `n`.`is_first` DESC, `n`.`content_id` DESC LIMIT 0, 6");
+		parser(funMap,"SELECT `c`.* FROM `city` AS `c` LEFT JOIN `shops` AS `s` ON (`s`.`city_id` = `c`.`city_id`) WHERE `s`.`shop_status` = 1 AND `s`.`booking_start_date` <= '2010-08-25 11:37:22' and `c`.city='weqwerq'	GROUP BY `c`.`city_id`");
+		parser(funMap,"select lease_price,global_price,advance_price,advance_price2,outlicheng_money,timeout_price,delay_work,pay_points from cartype_price where status=1 and '2010-08-25 09:20:56' BETWEEN start_datetime and end_datetime AND cartype_id=27 AND city_id=21 AND price_type=1 order by end_datetime desc limit 1");
 		parser(funMap,"SELECT * FROM d_visitor.t_visitor_visit WHERE `user`='1235625354' and visitors<>'1235625354' ORDER BY date DESC LIMIT 0,30");
 		parser(funMap,"SELECT PRIVILEGE,PRIVILEGE & 1   FROM SD_PHOTO.IMAGE    WHERE SDID=13916728412 and PRIVILEGE = 1& DD" );
 		
@@ -141,7 +146,7 @@ public class MysqlParserTest {
 			if(statment instanceof DMLStatement){
 				DMLStatement dmlStatment = (DMLStatement)statment;
 				Expression expression = dmlStatment.getExpression();
-				System.out.println(sql+" =[ "+ expression+"], evaluated = {"+dmlStatment.evaluate(null,(AbstractStatement)statment)+"} ,parameterCount="+dmlStatment.getParameterCount());
+				System.out.println(sql+" =[ "+ expression+"], evaluated = {"+dmlStatment.evaluate(null)+"} ,parameterCount="+dmlStatment.getParameterCount());
 			}else if(statment instanceof PropertyStatement ){
 				PropertyStatement proStatment = (PropertyStatement)statment;
 				System.out.println(proStatment.getProperties());

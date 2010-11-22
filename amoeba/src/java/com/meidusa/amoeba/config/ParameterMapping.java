@@ -16,7 +16,10 @@ package com.meidusa.amoeba.config;
 import java.beans.IntrospectionException;
 import java.beans.Introspector;
 import java.beans.PropertyDescriptor;
+import java.io.File;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -34,7 +37,25 @@ public class ParameterMapping {
 
     private static Logger                              logger                = Logger.getLogger(ParameterMapping.class);
     private static Map<Class<?>, PropertyDescriptor[]> propertyDescriptorMap = new HashMap<Class<?>, PropertyDescriptor[]>();
-
+    private static Map<Class<?>,PropertyTransfer<?>> stringTransferMap = new HashMap<Class<?>,PropertyTransfer<?>>();
+    
+    public static void registerTransfer(Class<?> type,PropertyTransfer<?> transfer){
+    	stringTransferMap.put(type,transfer);
+    }
+    
+    public static PropertyTransfer<?> lookup(Class fieldType){
+    	for(Map.Entry<Class<?>,PropertyTransfer<?>> entry :stringTransferMap.entrySet()){
+    		try{
+    			Class clazz = entry.getKey();
+    			if(clazz.equals(fieldType) || clazz.asSubclass(fieldType) != null){
+    				return entry.getValue();
+    			}
+    		}catch(ClassCastException e){
+    		}
+    	}
+    	return null;
+    }
+    
     private static PropertyDescriptor[] getDescriptors(Class<?> clazz) {
         PropertyDescriptor[] descriptors;
         List<PropertyDescriptor> list;
@@ -59,7 +80,7 @@ public class ParameterMapping {
         return (mDescriptors);
     }
 
-    public static void mappingObject(Object object, Map<String, Object> parameter) {
+    public static void mappingObject(Object object, Map<String, Object> parameter,Map<String,Object> context) {
         PropertyDescriptor[] descriptors = getDescriptors(object.getClass());
 
         for (int i = 0; i < descriptors.length; i++) {
@@ -68,23 +89,42 @@ public class ParameterMapping {
             Object value = obj;
             Class<?> cls = descriptors[i].getPropertyType();
             if (obj instanceof String) {
-                String string = (String) obj;
-                if (!StringUtil.isEmpty(string)) {
-                    string = ConfigUtil.filter(string);
-                }
+                
 
                 if (isPrimitiveType(cls)) {
+                	String string = (String) obj;
+                    if (!StringUtil.isEmpty(string)) {
+                        string = ConfigUtil.filter(string);
+                    }
                     value = deStringize(cls, string);
+                }else if(cls.equals(File.class)){
+                	String string = (String) obj;
+                    if (!StringUtil.isEmpty(string)) {
+                        string = ConfigUtil.filter(string);
+                    }
+                	value = new File(string);
+                }else {
+                	if(context != null){
+                		if(obj != null){
+                			String key = StringUtil.split(((String)obj).trim(), "${}")[0];
+                			value =  context.get(key);
+                			if(value == null){
+                				if (logger.isInfoEnabled()) {
+                                    logger.info(object.getClass() + "@" + descriptors[i].getName() + ", bean name="+key+" not found! ");
+                                }
+                			}
+                		}
+                	}
                 }
             } else if (obj instanceof BeanObjectEntityConfig) {
 
-                value = newBean((BeanObjectEntityConfig) obj);
+                value = newBean((BeanObjectEntityConfig) obj,context);
 
             } else if (obj instanceof BeanObjectEntityConfig[]) {
                 List<Object> list = new ArrayList<Object>();
 
                 for (BeanObjectEntityConfig beanconfig : (BeanObjectEntityConfig[]) obj) {
-                    list.add(newBean(beanconfig));
+                    list.add(newBean(beanconfig,context));
                 }
                 value = list.toArray();
             }
@@ -111,9 +151,10 @@ public class ParameterMapping {
         }
     }
 
+    //TODO 
     @SuppressWarnings("unchecked")
-    public static Object newBean(BeanObjectEntityConfig beanConfig) {
-        Object beanvalue = beanConfig.createBeanObject(true);
+    public static Object newBean(BeanObjectEntityConfig beanConfig,Map<String,Object> context) {
+        Object beanvalue = beanConfig.createBeanObject(true,context);
         // Map bean
         if (beanvalue instanceof Map) {
             Map map = (Map) beanvalue;
@@ -123,17 +164,17 @@ public class ParameterMapping {
                 if (mapValue instanceof BeanObjectEntityConfig) {
                     BeanObjectEntityConfig mapBeanConfig = (BeanObjectEntityConfig) entry.getValue();
                     mapValue = mapBeanConfig.createBeanObject(true);
-                    mappingObject(mapValue, mapBeanConfig.getParams());
+                    mappingObject(mapValue, mapBeanConfig.getParams(),context);
                 }
                 map.put(key, mapValue);
             }
         } else if (beanvalue instanceof List) {
 
         }
-        // other bean
+       /* // other bean
         else {
-            mappingObject(beanvalue, beanConfig.getParams());
-        }
+            mappingObject(beanvalue, beanConfig.getParams(),context);
+        }*/
 
         return beanvalue;
     }
@@ -193,5 +234,94 @@ public class ParameterMapping {
             return false;
         }
 
+    }
+    
+    public static void mappingObjectField(Object object, Map parameter,Class stopClass){
+    	Class clazz = object.getClass();
+    	while(clazz != stopClass && clazz != null){
+	    	Field[] fields = clazz.getDeclaredFields();
+	    	for(Field field : fields){
+	    		Object obj = parameter.get(field.getName());
+	            Object value = obj;
+	            Class<?> cls = field.getType();
+	            if (obj instanceof String) {
+	                String string = (String) obj;
+	                if (!StringUtil.isEmpty(string)) {
+	                    string = ConfigUtil.filter(string);
+	                }
+	
+	                if (isPrimitiveType(cls)) {
+	                    value = deStringize(cls, string);
+	                }else{
+	                	PropertyTransfer transfer = lookup(cls);
+	                	if(transfer != null){
+	                		value = transfer.transfer(string);
+	                	}
+	                }
+	                
+	                if (value != null) {
+	                	if(Modifier.isPublic(field.getModifiers())){
+	                		try {
+								field.set(object, value);
+							} catch (Exception e) {
+								e.printStackTrace();
+							}
+	                	}
+	                }
+	            }
+	    	}
+	    	clazz = clazz.getSuperclass();
+            
+    	}
+    	
+    }
+    
+    /**
+     * mapping object public field with ognlContext
+     *  
+     * @param object to be mapping
+     * @param parameter field key/value map
+     * @param context ognl context
+     * @param stopClass
+     */
+    public static void mappingObjectField(Object object, Map parameter,Map context,Object root,Class stopClass){
+    	Class clazz = object.getClass();
+    	while(clazz != stopClass && clazz != null){
+	    	Field[] fields = clazz.getDeclaredFields();
+	    	for(Field field : fields){
+	    		Object obj = parameter.get(field.getName());
+	            Object value = obj;
+	            Class<?> cls = field.getType();
+	            if (obj instanceof String) {
+	                String string = (String) obj;
+	                if (!StringUtil.isEmpty(string)) {
+	                    string = ConfigUtil.filterWtihOGNL(string, context, root);
+	                }
+	
+	                if (isPrimitiveType(cls)) {
+	                    value = deStringize(cls, string);
+	                }else{
+	                	PropertyTransfer transfer = lookup(cls);
+	                	if(transfer != null){
+	                		value = transfer.transfer(string);
+	                	}
+	                }
+	                
+	                if (value != null) {
+	                	if(!Modifier.isPublic(field.getModifiers())){
+	                		field.setAccessible(true);
+	                	}
+                		try {
+							field.set(object, value);
+						} catch (Exception e) {
+							e.printStackTrace();
+						}
+	                }
+	            }
+	    	}
+	    	clazz = clazz.getSuperclass();
+            
+    	}
+    	
     }
 }

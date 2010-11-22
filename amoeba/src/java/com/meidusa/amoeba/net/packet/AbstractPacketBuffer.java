@@ -1,3 +1,19 @@
+/**
+ * <pre>
+ * copy right meidusa.com
+ * 
+ * 	This program is free software; you can redistribute it and/or modify it under the terms of 
+ * the GNU General Public License as published by the Free Software Foundation; either version 3 of the License, 
+ * or (at your option) any later version. 
+ * 
+ * 	This program is distributed in the hope that it will be useful, 
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  
+ * See the GNU General Public License for more details. 
+ * 	You should have received a copy of the GNU General Public License along with this program; 
+ * if not, write to the Free Software Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ * </pre>
+ */
+
 package com.meidusa.amoeba.net.packet;
 
 import java.io.InputStream;
@@ -16,8 +32,6 @@ public class AbstractPacketBuffer implements PacketBuffer {
     protected int        position = 0;
 
     protected byte[]     buffer   = null;
-
-    protected Connection conn;
 
     public AbstractPacketBuffer(byte[] buf){
         buffer = new byte[buf.length];
@@ -116,7 +130,6 @@ public class AbstractPacketBuffer implements PacketBuffer {
     }
 
     protected void init(Connection conn) {
-        this.conn = conn;
     }
 
     public synchronized void reset() {
@@ -137,8 +150,7 @@ public class AbstractPacketBuffer implements PacketBuffer {
     }
 
     public InputStream asInputStream() {
-        return new InputStream() {
-
+		return new InputStream() {
             @Override
             public int available() {
                 return AbstractPacketBuffer.this.remaining();
@@ -185,7 +197,7 @@ public class AbstractPacketBuffer implements PacketBuffer {
     }
 
     public OutputStream asOutputStream() {
-        return new OutputStream() {
+		return new OutputStream() {
 
             @Override
             public void write(byte[] b, int off, int len) {
@@ -213,6 +225,18 @@ public class AbstractPacketBuffer implements PacketBuffer {
             buffer.writeBytes(byts);
             return true;
         }
+    }
+    
+    public static void main(String[] args){
+    	AbstractPacketBuffer buffer = new AbstractPacketBuffer(10);
+    	buffer.writeByte((byte)12);
+    	buffer.setPosition(10);
+    	ByteBuffer byteBuffer = buffer.toByteBuffer();
+    	System.out.println(byteBuffer.get());
+    	buffer.reset();
+    	buffer.writeByte((byte)14);
+    	byteBuffer = buffer.toByteBuffer();
+    	System.out.println(byteBuffer.get());
     }
 
 }

@@ -69,9 +69,9 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 	private long lastTimeMillis = System.currentTimeMillis();
 	private ErrorPacket errorPacket;
 	protected Statement statment;
+	private QueryCommandPacket command = new QueryCommandPacket();
 	public CommandMessageHandler(final MysqlClientConnection source,byte[] query,Statement statment, ObjectPool[] pools,long timeout){
 		commandQueue = new CommandQueue(source,statment);
-		QueryCommandPacket command = new QueryCommandPacket();
 		command.init(query,source);
 		this.pools = pools;
 		info.setBuffer(query);
@@ -172,7 +172,12 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 			}
 		}
 	}
-	protected void afterMainCommand(MysqlServerConnection conn){
+	
+	/**
+	 * this method will be invoked after main command response completed 
+	 * @param conn
+	 */
+	protected void afterCommand(MysqlServerConnection conn,CommandStatus commStatus){
 		
 	}
 	
@@ -199,7 +204,7 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 				if(CommandStatus.AllCompleted == commStatus || CommandStatus.ConnectionCompleted == commStatus){
 					
 					//记录 prepared statement ID 或者 close statement
-					afterMainCommand((MysqlServerConnection)fromConn);
+					afterCommand((MysqlServerConnection)fromConn,commStatus);
 					
 					if(commandQueue.currentCommand.isMain() || this.ended){
 						//mysqlServer connection return to pool
@@ -331,6 +336,7 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 	}
 	
 	/**
+	 * <pre>
 	 * 任何在handler里面需要发送到目标连接的数据包，都调用该方法发送出去。
 	 * 从服务器端发送过来的消息到客户端，或者从客户端发送命令到各个mysql server。
 	 * 
@@ -340,7 +346,7 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 	 * 以上2种数据包通过dispatchMessage 方法发送出去的。
 	 * 由内部产生的命令数据包可以在 afterCommandCompleted()之后 根据ConnectionStatus.buffers中保存。
 	 * commandQueue.clearAllBuffer() 以后buffers 将被清空
-	 * 
+	 * </pre>
 	 * @param fromServer 是否是从mysql server 端发送过来的
 	 * @param message 消息内容
 	 */
@@ -563,7 +569,9 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 	
 	public synchronized void startSession() throws Exception {
 		if(logger.isInfoEnabled()){
-			logger.info(this+" session start");
+			logger.info("session start[type="+this.command.command+"]:ip="+this.source.getSocketId()+",handlerId="+this.hashCode()
+					+",time="+(System.currentTimeMillis()-createTime)
+					+",sql="+(this.statment ==null?null:this.statment.getSql()));
 		}
 		
 		for(ObjectPool pool:pools){
@@ -646,7 +654,9 @@ public abstract class CommandMessageHandler implements MessageHandler,Sessionabl
 			source.postClose(null);
 		}else{
 			if(logger.isInfoEnabled()){
-				logger.info(this+" session ended.");
+				logger.info("session end[type="+this.command.command+"]:ip="+this.source.getSocketId()
+						+",handlerId="+this.hashCode()
+						+",sql="+(this.statment ==null?null:this.statment.getSql()));
 			}
 		}
 		this.dispatchMessageTo(source,null);

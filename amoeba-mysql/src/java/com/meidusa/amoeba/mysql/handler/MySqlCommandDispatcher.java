@@ -21,6 +21,7 @@ import java.util.Map;
 import org.apache.log4j.Logger;
 
 import com.meidusa.amoeba.context.ProxyRuntimeContext;
+import com.meidusa.amoeba.mysql.context.MysqlRuntimeContext;
 import com.meidusa.amoeba.mysql.jdbc.MysqlDefs;
 import com.meidusa.amoeba.mysql.net.MysqlClientConnection;
 import com.meidusa.amoeba.mysql.net.packet.BindValue;
@@ -39,11 +40,10 @@ import com.meidusa.amoeba.net.MessageHandler;
 import com.meidusa.amoeba.net.Sessionable;
 import com.meidusa.amoeba.net.poolable.ObjectPool;
 import com.meidusa.amoeba.parser.dbobject.Column;
-import com.meidusa.amoeba.parser.statement.InsertStatement;
 import com.meidusa.amoeba.parser.statement.SelectStatement;
 import com.meidusa.amoeba.parser.statement.Statement;
-import com.meidusa.amoeba.route.QueryRouter;
-import com.meidusa.amoeba.util.Tuple;
+import com.meidusa.amoeba.route.SqlBaseQueryRouter;
+import com.meidusa.amoeba.route.SqlQueryObject;
 
 /**
  * handler
@@ -53,8 +53,7 @@ import com.meidusa.amoeba.util.Tuple;
 public class MySqlCommandDispatcher implements MessageHandler {
 
     protected static Logger logger  = Logger.getLogger(MySqlCommandDispatcher.class);
-    private static Logger lastInsertID = Logger.getLogger("lastInsertId");
-    private long timeout = ProxyRuntimeContext.getInstance().getConfig().getQueryTimeout() * 1000;
+    private long timeout = ProxyRuntimeContext.getInstance().getRuntimeContext().getQueryTimeout() * 1000;
 
     private static byte[]   STATIC_OK_BUFFER;
     static {
@@ -82,11 +81,24 @@ public class MySqlCommandDispatcher implements MessageHandler {
 	        }
 	        try {
 	            if (MysqlPacketBuffer.isPacketType(message, QueryCommandPacket.COM_QUERY)) {
-	                QueryRouter router = ProxyRuntimeContext.getInstance().getQueryRouter();
-	                Tuple<Statement,ObjectPool[]> tuple = router.doRoute(conn, command.query, false, null);
-	                Statement statment = tuple.left;
-	                ObjectPool[] pools = tuple.right;
-	                if (statment != null && statment instanceof SelectStatement && ((SelectStatement)tuple.left).isQueryLastInsertId()) {
+	            	
+	            	SqlBaseQueryRouter router = (SqlBaseQueryRouter)ProxyRuntimeContext.getInstance().getQueryRouter();
+	            	Statement statment = router.parseStatement(conn, command.query);
+
+	            	if(command.query != null && (command.query.indexOf("'$version'")>0 || command.query.indexOf("@amoebaversion")>0)){
+	            		MysqlResultSetPacket lastPacketResult = createAmoebaVersion(conn,(SelectStatement)statment,false);
+            			lastPacketResult.wirteToConnection(conn);
+            			return;
+	            	}
+	            	
+	                SqlQueryObject queryObject = new SqlQueryObject();
+	                queryObject.isPrepared = false;
+	                queryObject.sql = command.query;
+	               
+	                ObjectPool[] pools = router.doRoute(conn, queryObject);
+	               
+		                
+	                if (statment != null && statment instanceof SelectStatement && ((SelectStatement)statment).isQueryLastInsertId()) {
 	                	MysqlResultSetPacket lastPacketResult = createLastInsertIdPacket(conn,(SelectStatement)statment,false);
             			lastPacketResult.wirteToConnection(conn);
             			return;
@@ -97,7 +109,7 @@ public class MySqlCommandDispatcher implements MessageHandler {
 	                	return;
 	                }
 	                
-	                MessageHandler handler = new QueryCommandMessageHandler(conn, message,statment, tuple.right, timeout);
+	                MessageHandler handler = new QueryCommandMessageHandler(conn, message,statment, pools, timeout);
 	                if (handler instanceof Sessionable) {
 	                    Sessionable session = (Sessionable) handler;
 	                    try {
@@ -110,16 +122,28 @@ public class MySqlCommandDispatcher implements MessageHandler {
 	                }
 	            } else if (MysqlPacketBuffer.isPacketType(message, QueryCommandPacket.COM_STMT_PREPARE)) {
 	            	
+	            	/**
+	            	 * 获取之前prepared过的数据，直接返回给客户端，如果没有则需要往后端mysql发起请求，
+	            	 * 然后数据以后填充PreparedStatmentInfo，并且给客户端
+	            	 */
 	                PreparedStatmentInfo preparedInf = conn.getPreparedStatmentInfo(command.query);
 	                if(preparedInf.getByteBuffer() != null && preparedInf.getByteBuffer().length >0){
 	                	conn.postMessage(preparedInf.getByteBuffer());
 	                	return;
 	                }
 	                
-	                QueryRouter router = ProxyRuntimeContext.getInstance().getQueryRouter();
-	                Tuple<Statement,ObjectPool[]> tuple = router.doRoute(conn, command.query, true, null);
+	                /**
+	                 * 无命中情况
+	                 */
+	                SqlBaseQueryRouter router = (SqlBaseQueryRouter)ProxyRuntimeContext.getInstance().getQueryRouter();
+	                SqlQueryObject queryObject = new SqlQueryObject();
+	                queryObject.isPrepared = true;
+	                queryObject.sql = command.query;
+	               
+	                ObjectPool[] pools = router.doRoute(conn, queryObject);
+	                Statement statment = router.parseStatement(conn, command.query);
 	                
-	            	PreparedStatmentMessageHandler handler = new PreparedStatmentMessageHandler(conn,preparedInf,tuple.left, message , new ObjectPool[]{tuple.right[0]}, timeout,false);
+	            	PreparedStatmentMessageHandler handler = new PreparedStatmentMessageHandler(conn,preparedInf,statment, message , new ObjectPool[]{pools[0]}, timeout);
 	            	if (handler instanceof Sessionable) {
 	                    Sessionable session = (Sessionable) handler;
 	                    try {
@@ -147,19 +171,10 @@ public class MySqlCommandDispatcher implements MessageHandler {
 		                } else {
 		                	Statement statment = preparedInf.getStatment();
 		                	if (statment != null && statment instanceof SelectStatement && ((SelectStatement)statment).isQueryLastInsertId()) {
-		                		if(lastInsertID.isDebugEnabled()){
-		                			lastInsertID.debug("SQL="+statment.getSql());
-		                		}
 		                		MysqlResultSetPacket lastPacketResult = createLastInsertIdPacket(conn,(SelectStatement)statment,true);
 		            			lastPacketResult.wirteToConnection(conn);
 		            			return;
 			                }
-		                	
-		                	if(statment instanceof InsertStatement){
-		                		if(lastInsertID.isDebugEnabled()){
-		                			lastInsertID.debug("SQL="+statment.getSql());
-		                		}
-		                	}
 		                	
 		                    Map<Integer, Object> longMap = new HashMap<Integer, Object>();
 		                    for (byte[] longdate : conn.getLongDataList()) {
@@ -171,14 +186,18 @@ public class MySqlCommandDispatcher implements MessageHandler {
 		                    ExecutePacket executePacket = new ExecutePacket(preparedInf, longMap);
 		                    executePacket.init(message, connection);
 		
-		                    QueryRouter router = ProxyRuntimeContext.getInstance().getQueryRouter();
-		                    Tuple<Statement,ObjectPool[]> tuple = router.doRoute(conn, preparedInf.getPreparedStatment(), false, executePacket.getParameters());
+		                    SqlBaseQueryRouter router = (SqlBaseQueryRouter)ProxyRuntimeContext.getInstance().getQueryRouter();
+			                SqlQueryObject queryObject = new SqlQueryObject();
+			                queryObject.isPrepared = false;
+			                queryObject.sql = preparedInf.getSql();
+			                queryObject.parameters = executePacket.getParameters();
+			                ObjectPool[] pools = router.doRoute(conn, queryObject);
 		
 		                    PreparedStatmentExecuteMessageHandler handler = new PreparedStatmentExecuteMessageHandler(
 		                                                                                                              conn,
-		                                                                                                              preparedInf,tuple.left,
+		                                                                                                              preparedInf,statment,
 		                                                                                                              message,
-		                                                                                                              tuple.right,
+		                                                                                                              pools,
 		                                                                                                              timeout);
 		                    handler.setExecutePacket(executePacket);
 		                    if (handler instanceof Sessionable) {
@@ -218,6 +237,57 @@ public class MySqlCommandDispatcher implements MessageHandler {
 	            logger.error("messageDispate error", e);
 	        }
 		}
+    }
+    
+    private MysqlResultSetPacket createAmoebaVersion(MysqlClientConnection conn,SelectStatement statment,boolean isPrepared){
+    	Map<String,Column> selectedMap = ((SelectStatement)statment).getSelectColumnMap();
+		MysqlResultSetPacket lastPacketResult = new MysqlResultSetPacket(null);
+		lastPacketResult.resulthead = new ResultSetHeaderPacket();
+		lastPacketResult.resulthead.columns = (selectedMap.size()==0?1:selectedMap.size());
+		if(selectedMap.size() == 0){
+			Column column = new Column();
+			column.setName("@amoebaversion");
+			selectedMap.put("@amoebaversion", column);
+		}
+		lastPacketResult.resulthead.extra = 1;
+		RowDataPacket row = new RowDataPacket(isPrepared);
+		row.columns = new ArrayList<Object>();
+		int index =0; 
+		lastPacketResult.fieldPackets = new FieldPacket[selectedMap.size()];
+		for(Map.Entry<String, Column> entry : selectedMap.entrySet()){
+			FieldPacket field = new FieldPacket();
+			String alias = entry.getValue().getAlias();
+			
+			
+			if("@amoebaversion".equalsIgnoreCase(entry.getValue().getName()) 
+				||  "'$version'".equalsIgnoreCase(entry.getValue().getName())){
+				BindValue value = new BindValue();
+				value.bufferType = MysqlDefs.FIELD_TYPE_VARCHAR;
+				value.value = MysqlRuntimeContext.SERVER_VERSION;
+				value.scale = 20;
+				value.isSet = true;
+				row.columns.add(value);
+				field.name = (alias == null?entry.getValue().getName()+"()":alias);
+			}else{
+				BindValue value = new BindValue();
+				value.bufferType = MysqlDefs.FIELD_TYPE_VARCHAR;
+				value.scale = 20;
+				value.isNull = true;
+				row.columns.add(value);
+				field.name = (alias == null?entry.getValue().getName():alias);
+			}
+			
+			field.type = (byte)MysqlDefs.FIELD_TYPE_VARCHAR;
+			field.catalog = "def";
+			field.length = 20;
+			lastPacketResult.fieldPackets[index] = field; 
+			index++;
+		}
+			
+		List<RowDataPacket> list = new ArrayList<RowDataPacket>();
+		list.add(row);
+		lastPacketResult.setRowList(list);
+		return lastPacketResult;
     }
     
     private MysqlResultSetPacket createLastInsertIdPacket(MysqlClientConnection conn,SelectStatement statment,boolean isPrepared){

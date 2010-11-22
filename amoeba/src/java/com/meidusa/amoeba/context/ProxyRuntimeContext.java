@@ -22,9 +22,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Executor;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import javax.xml.parsers.DocumentBuilder;
@@ -34,10 +31,8 @@ import org.apache.commons.pool.PoolableObjectFactory;
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 import org.apache.log4j.helpers.LogLog;
-import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
-import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.EntityResolver;
@@ -52,6 +47,9 @@ import com.meidusa.amoeba.config.DBServerConfig;
 import com.meidusa.amoeba.config.DocumentUtil;
 import com.meidusa.amoeba.config.ParameterMapping;
 import com.meidusa.amoeba.config.ProxyServerConfig;
+import com.meidusa.amoeba.heartbeat.HeartbeatDelayed;
+import com.meidusa.amoeba.heartbeat.HeartbeatManager;
+import com.meidusa.amoeba.heartbeat.Status;
 import com.meidusa.amoeba.net.ConnectionManager;
 import com.meidusa.amoeba.net.poolable.MultipleLoadBalanceObjectPool;
 import com.meidusa.amoeba.net.poolable.ObjectPool;
@@ -65,7 +63,7 @@ import com.meidusa.amoeba.util.StringUtil;
 /**
  * @author <a href=mailto:piratebase@sina.com>Struct chen</a>
  */
-public abstract class ProxyRuntimeContext implements Reporter {
+public class ProxyRuntimeContext implements Reporter {
 
     public static final String             DEFAULT_SERVER_CONNECTION_MANAGER_CLASS = "com.meidusa.amoeba.net.AuthingableConnectionManager";
     public static final String             DEFAULT_REAL_POOL_CLASS                 = "com.meidusa.amoeba.net.poolable.PoolableObjectPool";
@@ -73,31 +71,33 @@ public abstract class ProxyRuntimeContext implements Reporter {
 
     protected static Logger                logger                                  = Logger.getLogger(ProxyRuntimeContext.class);
 
-    private static ProxyRuntimeContext     context;
+    private static ProxyRuntimeContext     context = null;
 
     private ProxyServerConfig              config;
 
-    private Executor                       readExecutor;
-    private Executor                       clientSideExecutor;
-    private Executor                       serverSideExecutor;
     private Map<String, ConnectionManager> conMgrMap                               = new HashMap<String, ConnectionManager>();
     private Map<String, ConnectionManager> readOnlyConMgrMap                       = Collections.unmodifiableMap(conMgrMap);
 
     private Map<String, ObjectPool>        poolMap                                 = new HashMap<String, ObjectPool>();
     private Map<String, ObjectPool>        readOnlyPoolMap                         = Collections.unmodifiableMap(poolMap);
 
-    private QueryRouter                    queryRouter;
-    private String                         serverCharset;
+    private List<ContextChangedListener> listeners = new ArrayList<ContextChangedListener>();
+    
+    @SuppressWarnings("unchecked")
+	private QueryRouter                    queryRouter;
+    private RuntimeContext runtimeContext;
 
-    public static ProxyRuntimeContext getInstance() {
+	public RuntimeContext getRuntimeContext() {
+		return runtimeContext;
+	}
+
+	public static ProxyRuntimeContext getInstance() {
         return context;
     }
 
-    protected static void setInstance(ProxyRuntimeContext context) {
+    public static void setInstance(ProxyRuntimeContext context) {
         ProxyRuntimeContext.context = context;
     }
-
-    protected abstract String getDefaultServerConnectionFactoryClassName();
 
     protected String getDefaultServerConnectionManagerClassName() {
         return DEFAULT_SERVER_CONNECTION_MANAGER_CLASS;
@@ -111,14 +111,6 @@ public abstract class ProxyRuntimeContext implements Reporter {
         return DEFAULT_VIRTUAL_POOL_CLASS;
     }
 
-    public String getServerCharset() {
-        return serverCharset;
-    }
-
-    public void setServerCharset(String serverCharset) {
-        this.serverCharset = serverCharset;
-    }
-
     public ProxyServerConfig getConfig() {
         return config;
     }
@@ -127,52 +119,11 @@ public abstract class ProxyRuntimeContext implements Reporter {
         return queryRouter;
     }
 
-    static class ReNameableThreadExecutor extends ThreadPoolExecutor {
-
-        // Map<Thread,String> threadNameMap = new HashMap<Thread,String>();
-
-        public ReNameableThreadExecutor(int poolSize){
-            super(poolSize, poolSize, Long.MAX_VALUE, TimeUnit.NANOSECONDS, new LinkedBlockingQueue<Runnable>());
-        }
-
-        // protected void beforeExecute(Thread t, Runnable r) {
-        // if (r instanceof NameableRunner) {
-        // NameableRunner nameableRunner = (NameableRunner) r;
-        // String name = t.getName();
-        // if (name != null) {
-        // threadNameMap.put(t, t.getName());
-        // t.setName(nameableRunner.getRunnerName() + ":" + t.getName());
-        // }
-        // }
-        // };
-        //
-        // protected void afterExecute(Runnable r, Throwable t) {
-        // if (r instanceof NameableRunner) {
-        // String name = threadNameMap.remove(Thread.currentThread());
-        // if (name != null) {
-        // Thread.currentThread().setName(name);
-        // }
-        // }
-        // };
-    }
-
-    protected ProxyRuntimeContext(){
+    public ProxyRuntimeContext(){
     }
 
     public Map<String, ConnectionManager> getConnectionManagerList() {
         return readOnlyConMgrMap;
-    }
-
-    public Executor getClientSideExecutor() {
-        return clientSideExecutor;
-    }
-
-    public Executor getReadExecutor() {
-        return readExecutor;
-    }
-
-    public Executor getServerSideExecutor() {
-        return serverSideExecutor;
     }
 
     public Map<String, ObjectPool> getPoolMap() {
@@ -181,14 +132,92 @@ public abstract class ProxyRuntimeContext implements Reporter {
 
     private List<Initialisable> initialisableList = new ArrayList<Initialisable>();
 
+    /**
+     * 
+     * @param parent
+     * @param dest
+     * @return
+     */
+    protected void inheritDBServerConfig(DBServerConfig parent ,DBServerConfig dest){
+    	BeanObjectEntityConfig destBeanConfig = dest.getFactoryConfig();
+		BeanObjectEntityConfig parentBeanConfig = parent.getFactoryConfig();
+		
+    	if(destBeanConfig != null){
+    		if(parentBeanConfig != null){
+    			inheritBeanObjectEntityConfig(parentBeanConfig,destBeanConfig);
+    		}
+    	}else{
+    		dest.setFactoryConfig(parentBeanConfig);
+    	}
+    	
+    	destBeanConfig = dest.getPoolConfig();
+		parentBeanConfig = parent.getPoolConfig();
+		
+		if(destBeanConfig != null){
+    		if(parentBeanConfig != null){
+    			inheritBeanObjectEntityConfig(parentBeanConfig,destBeanConfig);
+    		}
+    	}else{
+    		dest.setPoolConfig(parentBeanConfig);
+    	}
+		
+		if(dest.getVirtual()== null){
+			dest.setVirtual(parent.getVirtual());
+		}
+		
+		if(dest.getAbstractive()== null){
+			dest.setAbstractive(parent.getAbstractive());
+		}
+		
+    }
+    
+    public void addContextChangedListener(ContextChangedListener listener){
+    	if(!listeners.contains(listener)){
+    		this.listeners.add(listener);
+    	}
+    }
+    
+    public void removeContextChangedListener(ContextChangedListener listener){
+		this.listeners.remove(listener);
+    }
+    
+    public void notifyAllContextChangedListener(){
+    	for(ContextChangedListener listener : listeners){
+    		listener.doChange();
+    	}
+    }
+    
+    
+    protected  void inheritBeanObjectEntityConfig(BeanObjectEntityConfig parent,BeanObjectEntityConfig dest){
+    	BeanObjectEntityConfig parentCloned = (BeanObjectEntityConfig)parent.clone();
+    	if(!StringUtil.isEmpty(dest.getClassName())){
+    		parentCloned.setClassName(dest.getClassName());
+    	}
+    	
+    	/*if(!StringUtil.isEmpty(dest.getName())){
+    		parentCloned.setName(dest.getName());
+    	}*/
+    	
+    	if(dest.getParams() != null){
+    		if(parentCloned.getParams() == null){
+    			parentCloned.setParams(dest.getParams());
+    		}else{
+    			parentCloned.getParams().putAll(dest.getParams());
+    		}
+    	}
+    	
+    	dest.setClassName(parentCloned.getClassName());
+    	//dest.setName(parentCloned.getName());
+    	dest.setParams(parentCloned.getParams());
+    }
+    
+    
+    
     public void init(String file) {
         config = loadConfig(file);
-        readExecutor = new ReNameableThreadExecutor(config.getReadThreadPoolSize());
-        serverSideExecutor = new ReNameableThreadExecutor(config.getServerSideThreadPoolSize());
-        clientSideExecutor = new ReNameableThreadExecutor(config.getClientSideThreadPoolSize());
-        serverCharset = config.getServerCharset();
-
-        for (Map.Entry<String, BeanObjectEntityConfig> entry : config.getManagers().entrySet()) {
+        this.runtimeContext = (RuntimeContext)config.getRuntimeConfig().createBeanObject(true);
+        
+        /*for (Map.Entry<String, BeanObjectEntityConfig> entry : config.getManagers().entrySet()) {
             BeanObjectEntityConfig beanObjectEntityConfig = entry.getValue();
             try {
                 ConnectionManager manager = (ConnectionManager) beanObjectEntityConfig.createBeanObject(false);
@@ -198,19 +227,33 @@ public abstract class ProxyRuntimeContext implements Reporter {
             } catch (Exception e) {
                 throw new ConfigurationException("manager instance error", e);
             }
-        }
+        }*/
 
         for (Map.Entry<String, DBServerConfig> entry : config.getDbServers().entrySet()) {
-            DBServerConfig dbServerConfig = entry.getValue();
+            DBServerConfig dbServerConfig = (DBServerConfig)entry.getValue().clone();
+            String parent = dbServerConfig.getParent();
+            if(!StringUtil.isEmpty(parent)){
+            	DBServerConfig parentConfig = config.getDbServers().get(parent);
+            	if(parentConfig == null || parentConfig.getParent() != null){
+            		throw new ConfigurationException(entry.getKey()+" cannot found parent with name="+parent+" or parent's parent must be null");
+            	}
+            	inheritDBServerConfig(parentConfig,dbServerConfig);
+            }
+            
+            //ignore if dbServer is abstract
+            if(dbServerConfig.getAbstractive() != null && dbServerConfig.getAbstractive().booleanValue()){
+            	continue;
+            }
+            
             try {
                 BeanObjectEntityConfig poolConfig = dbServerConfig.getPoolConfig();
-                ObjectPool pool = (ObjectPool) poolConfig.createBeanObject(false);
+                ObjectPool pool = (ObjectPool) poolConfig.createBeanObject(false,conMgrMap);
                 pool.setName(StringUtil.isEmpty(poolConfig.getName())?dbServerConfig.getName():poolConfig.getName());
                 if (pool instanceof Initialisable) {
                     initialisableList.add((Initialisable) pool);
                 }
                 if (dbServerConfig.getFactoryConfig() != null) {
-                    PoolableObjectFactory factory = (PoolableObjectFactory) dbServerConfig.getFactoryConfig().createBeanObject(false);
+                    PoolableObjectFactory factory = (PoolableObjectFactory) dbServerConfig.getFactoryConfig().createBeanObject(false,conMgrMap);
                     if (factory instanceof Initialisable) {
                         initialisableList.add((Initialisable) factory);
                     }
@@ -218,16 +261,19 @@ public abstract class ProxyRuntimeContext implements Reporter {
                 }
                 poolMap.put(entry.getKey(), pool);
             } catch (Exception e) {
-                throw new ConfigurationException("manager instance error", e);
+                throw new ConfigurationException("createBean error dbServer="+dbServerConfig.getName(), e);
             }
         }
 
         if (config.getQueryRouterConfig() != null) {
             BeanObjectEntityConfig queryRouterConfig = config.getQueryRouterConfig();
             try {
-                queryRouter = (QueryRouter) queryRouterConfig.createBeanObject(false);
+                queryRouter = (QueryRouter) queryRouterConfig.createBeanObject(false,conMgrMap);
                 if (queryRouter instanceof Initialisable) {
                     initialisableList.add((Initialisable) queryRouter);
+                }
+                if(queryRouter instanceof ContextChangedListener){
+                	this.addContextChangedListener((ContextChangedListener)queryRouter);
                 }
             } catch (Exception e) {
                 throw new ConfigurationException("queryRouter instance error", e);
@@ -264,6 +310,10 @@ public abstract class ProxyRuntimeContext implements Reporter {
                     }
                 }
             }
+            
+            if(pool instanceof ContextChangedListener){
+            	this.addContextChangedListener((ContextChangedListener)pool);
+            }
         }
     }
 
@@ -271,8 +321,11 @@ public abstract class ProxyRuntimeContext implements Reporter {
         for (Initialisable bean : initialisableList) {
             try {
                 bean.init();
+                if(bean instanceof ContextChangedListener){
+                	this.addContextChangedListener((ContextChangedListener)bean);
+                }
             } catch (InitialisationException e) {
-                throw new ConfigurationException("Initialisation Exception", e);
+                throw new ConfigurationException("Initialisation bean="+bean+" error", e);
             }
         }
     }
@@ -361,12 +414,12 @@ public abstract class ProxyRuntimeContext implements Reporter {
                 Element child = (Element) childNode;
 
                 final String nodeName = child.getNodeName();
-                if (nodeName.equals("server")) {
-                    loadServerConfig(child, config);
+                if (nodeName.equals("proxy")) {
+                	loadProxyConfig(child, config);
                 } else if (nodeName.equals("connectionManagerList")) {
                     loadConnectionManagers(child, config);
-                } else if (nodeName.equals("dbServerList")) {
-                    loadServers(child, config);
+                } else if (nodeName.equals("dbServerLoader")) {
+                    loadDbServerLoader(rootElement, config);
                 } else if (nodeName.equals("queryRouter")) {
                     loadQueryRouter(rootElement, config);
                 }
@@ -374,7 +427,7 @@ public abstract class ProxyRuntimeContext implements Reporter {
         }
 
         if (logger.isInfoEnabled()) {
-            logger.info("Loaded Engine configuration from: " + fileName);
+            logger.info("Loaded Amoeba Proxy configuration from: " + fileName);
         }
         return config;
     }
@@ -384,63 +437,10 @@ public abstract class ProxyRuntimeContext implements Reporter {
         config.setQueryRouterConfig(queryRouter);
     }
 
-    private void loadServers(Element current, ProxyServerConfig config) {
-        NodeList children = current.getChildNodes();
-        int childSize = children.getLength();
-        for (int i = 0; i < childSize; i++) {
-            Node childNode = children.item(i);
-            if (childNode instanceof Element) {
-                Element child = (Element) childNode;
-                DBServerConfig serverConfig = loadServer(child);
-                if (serverConfig.isVirtual()) {
-                    if (serverConfig.getPoolConfig() != null) {
-                        if (StringUtil.isEmpty(serverConfig.getPoolConfig().getClassName())) {
-                            serverConfig.getPoolConfig().setClassName(getDefaultVirtualPoolClassName());
-                        }
-                    }
-                } else {
-                    if (serverConfig.getPoolConfig() != null) {
-                        if (StringUtil.isEmpty(serverConfig.getPoolConfig().getClassName())) {
-                            serverConfig.getPoolConfig().setClassName(getDefaultRealPoolClassName());
-                        }
-                    }
-                }
-
-                if (serverConfig.getFactoryConfig() != null) {
-                    if (StringUtil.isEmpty(serverConfig.getFactoryConfig().getClassName())) {
-                        serverConfig.getFactoryConfig().setClassName(getDefaultServerConnectionFactoryClassName());
-                    }
-                }
-                config.addServer(serverConfig.getName(), serverConfig);
-            }
-        }
-    }
-
-    private DBServerConfig loadServer(Element current) {
-        DBServerConfig serverConfig = new DBServerConfig();
-        NamedNodeMap nodeMap = current.getAttributes();
-        Map<String, Object> map = new HashMap<String, Object>();
-        for (int i = 0; i < nodeMap.getLength(); i++) {
-            Node node = nodeMap.item(i);
-            if (node instanceof org.w3c.dom.Attr) {
-                Attr attr = (Attr) node;
-                map.put(attr.getName(), attr.getNodeValue());
-            }
-        }
-
-        ParameterMapping.mappingObject(serverConfig, map);
-
-        BeanObjectEntityConfig factory = DocumentUtil.loadBeanConfig(DocumentUtil.getTheOnlyElement(current, "factoryConfig"));
-        BeanObjectEntityConfig pool = DocumentUtil.loadBeanConfig(DocumentUtil.getTheOnlyElement(current, "poolConfig"));
-        if (pool != null) {
-            serverConfig.setPoolConfig(pool);
-        }
-
-        if (factory != null) {
-            serverConfig.setFactoryConfig(factory);
-        }
-
-        return serverConfig;
+    private void loadDbServerLoader(Element current, ProxyServerConfig config) {
+    	BeanObjectEntityConfig dbserverLoader = DocumentUtil.loadBeanConfig(DocumentUtil.getTheOnlyElement(current, "dbServerLoader"));
+    	DBServerConfigLoader loader = (DBServerConfigLoader)dbserverLoader.createBeanObject(true, this.getConnectionManagerList());
+    	config.putAllServers(loader.loadConfig());
     }
 
     private void loadConnectionManagers(Element current, ProxyServerConfig config) {
@@ -457,9 +457,21 @@ public abstract class ProxyRuntimeContext implements Reporter {
                 config.addManager(managerConfig.getName(), managerConfig);
             }
         }
+        
+        //create bean and init
+        for (Map.Entry<String, BeanObjectEntityConfig> entry : config.getManagers().entrySet()) {
+            BeanObjectEntityConfig beanObjectEntityConfig = entry.getValue();
+            try {
+                ConnectionManager manager = (ConnectionManager) beanObjectEntityConfig.createBeanObject(true);
+                manager.setName(entry.getKey());
+                conMgrMap.put(manager.getName(), manager);
+            } catch (Exception e) {
+                throw new ConfigurationException("manager instance error", e);
+            }
+        }
     }
 
-    private void loadServerConfig(Element current, ProxyServerConfig config) {
+    private void loadProxyConfig(Element current, ProxyServerConfig config) {
         NodeList children = current.getChildNodes();
         int childSize = children.getLength();
         Map<String, Object> map = new HashMap<String, Object>();
@@ -472,10 +484,16 @@ public abstract class ProxyRuntimeContext implements Reporter {
                     String key = child.getAttribute("name");
                     String value = child.getTextContent();
                     map.put(key, value);
+                }else if(nodeName.equals("service")){
+                	BeanObjectEntityConfig server = DocumentUtil.loadBeanConfig(child);
+                	config.addServerConfig(server);
+                }else if(nodeName.equals("runtime")){
+                	BeanObjectEntityConfig runtime = DocumentUtil.loadBeanConfig(child);
+                	config.setRuntimeConfig(runtime);
                 }
             }
         }
-        ParameterMapping.mappingObject(config, map);
+        ParameterMapping.mappingObject(config, map,null);
     }
 
     public void appendReport(StringBuilder buffer, long now, long sinceLast, boolean reset, Level level) {
@@ -487,4 +505,211 @@ public abstract class ProxyRuntimeContext implements Reporter {
         }
     }
 
+    
+    static class CloseObjectPoolHeartbeatDelayed extends HeartbeatDelayed{
+		private ObjectPool pool;
+		public CloseObjectPoolHeartbeatDelayed(long nsTime, TimeUnit timeUnit,ObjectPool pool) {
+			super(nsTime, timeUnit);
+			this.pool = pool;
+		}
+
+		@Override
+		public Status doCheck() {
+			if(pool.getNumActive() == 0){
+				return Status.VALID;
+			}
+			return null;
+		}
+
+		public boolean isCycle(){
+        	return false;
+        }
+		
+		public void cancel(){
+        	try {
+				this.pool.close();
+			} catch (Exception e) {
+			}
+        }
+		
+		public boolean equals(Object obj) {
+	    	if(obj instanceof CloseObjectPoolHeartbeatDelayed){
+	    		CloseObjectPoolHeartbeatDelayed other = (CloseObjectPoolHeartbeatDelayed)obj;
+	    		return other.pool == this.pool && this.getClass() == obj.getClass();
+	    	}else{
+	    		return false;
+	    	}
+        }
+	    
+	    public int hashCode(){
+	    	return pool == null?this.getClass().hashCode():this.getClass().hashCode() + pool.hashCode();
+	    }
+
+		@Override
+		public String getName() {
+			return "closing Pool="+pool.getName();
+		}
+		
+	}
+	
+	private ObjectPool createObjectPool(DBServerConfig config) throws ConfigurationException{
+		ObjectPool pool = null;
+		try {
+            BeanObjectEntityConfig poolConfig = config.getPoolConfig();
+            pool = (ObjectPool) poolConfig.createBeanObject(true);
+            pool.setName(StringUtil.isEmpty(poolConfig.getName())?config.getName():poolConfig.getName());
+            
+            if (config.getFactoryConfig() != null) {
+                PoolableObjectFactory factory = (PoolableObjectFactory) config.getFactoryConfig().createBeanObject(true);
+                pool.setFactory(factory);
+            }
+        } catch (Exception e) {
+            throw new ConfigurationException("createBean error", e);
+        }
+        
+        if (pool instanceof MultipleLoadBalanceObjectPool) {
+            MultipleLoadBalanceObjectPool multiPool = (MultipleLoadBalanceObjectPool) pool;
+            multiPool.initAllPools();
+        } else {
+            PoolableObject object = null;
+            try {
+                object = (PoolableObject) pool.borrowObject();
+            } catch (Exception e) {
+                logger.error("init pool error!", e);
+                throw new ConfigurationException("init pool error!", e);
+            } finally {
+                if (object != null) {
+                    try {
+                        pool.returnObject(object);
+                    } catch (Exception e) {
+                        logger.error("return init pools error", e);
+                        throw new ConfigurationException("return init pools error", e);
+                    }
+                }
+            }
+        }
+        
+        return pool;
+	}
+	
+	/**
+	 * update dbServerConfig
+	 * @param sourceConfig
+	 * @param tryUpdate
+	 * @throws ConfigurationException
+	 */
+	public void updateDBServer(DBServerConfig sourceConfig,boolean tryUpdate) throws ConfigurationException {
+		boolean abstractive = sourceConfig.getAbstractive();
+		
+		if (sourceConfig == null || StringUtil.isEmpty(sourceConfig.getName())) {
+			throw new ConfigurationException("config or config's name cannot be null");
+		}
+
+		if(tryUpdate){
+		
+			//try to create ObjectPool with this sourceConfig
+			if(!abstractive){
+				DBServerConfig config = (DBServerConfig)sourceConfig.clone();
+				if (sourceConfig.getParent() != null) {
+					DBServerConfig parent = this.getConfig().getDbServers().get(config.getParent());
+					if (parent == null) {
+						throw new ConfigurationException("parent config withe name=" + config.getParent() + " not found");
+					}
+					this.inheritDBServerConfig(parent, config);
+				}
+				
+				ObjectPool pool = createObjectPool(config);
+				try {
+					pool.close();
+				} catch (Exception e) {
+					
+				}
+			}else{
+				Map<String,DBServerConfig> dbServerConfigs = this.getConfig().getDbServers();
+				for(Map.Entry<String,DBServerConfig> entry : dbServerConfigs.entrySet()){
+					if(StringUtil.equals(entry.getValue().getParent(),sourceConfig.getName())){
+						if(!entry.getValue().getAbstractive()){
+							DBServerConfig child = (DBServerConfig)entry.getValue().clone();
+							this.inheritDBServerConfig(sourceConfig, child);
+							ObjectPool pool = createObjectPool(child);
+							try {
+								pool.close();
+							} catch (Exception e) {
+								
+							}
+							break;
+						}
+					}
+				}
+			}
+			
+		}else{
+		
+			/**
+			 * close old objectPool
+			 * if this configuration is abstractive then close all children's objectPools 
+			 * else the old ObjectPool will be closed
+			 * 
+			 */
+			this.getConfig().addServer(sourceConfig.getName(),sourceConfig);
+			
+			if (!abstractive) {
+				DBServerConfig config = (DBServerConfig)sourceConfig.clone();
+				if (sourceConfig.getParent() != null) {
+					DBServerConfig parent = this.getConfig().getDbServers().get(sourceConfig.getParent());
+					if (parent == null) {
+						throw new ConfigurationException("parent config withe name=" + sourceConfig.getParent() + " not found");
+					}
+	
+					this.inheritDBServerConfig(parent, config);
+				}
+				
+				ObjectPool pool = createObjectPool(config);
+				
+				
+				//close old ObjectPool
+				ObjectPool oldObjectPool = this.getPoolMap().get(config.getName());
+				
+				this.getPoolMap().put(config.getName(), pool);
+				this.notifyAllContextChangedListener();
+				if(oldObjectPool != null){
+					
+					//MultipleLoadBalanceObjectPool not to be closed;
+					if(!(oldObjectPool instanceof MultipleLoadBalanceObjectPool)){
+						CloseObjectPoolHeartbeatDelayed delay = new CloseObjectPoolHeartbeatDelayed(5,TimeUnit.SECONDS,oldObjectPool);
+						HeartbeatManager.addHeartbeat(delay);
+					}
+				}
+			}else{
+				//close all children's ObjectPools
+				Map<String,DBServerConfig> dbServerConfigs = this.getConfig().getDbServers();
+				for(Map.Entry<String,DBServerConfig> entry : dbServerConfigs.entrySet()){
+					if(StringUtil.equals(entry.getValue().getParent(),sourceConfig.getName())){
+						if(!entry.getValue().getAbstractive()){
+							DBServerConfig child = (DBServerConfig)entry.getValue().clone();
+							this.inheritDBServerConfig(sourceConfig, child);
+							
+							ObjectPool pool = createObjectPool(child);
+							
+							//close old ObjectPool
+							ObjectPool oldObjectPool = this.getPoolMap().get(child.getName());
+							
+							this.getPoolMap().put(child.getName(), pool);
+							this.notifyAllContextChangedListener();
+							if(oldObjectPool != null){
+								
+								//MultipleLoadBalanceObjectPool not to be closed;
+								if(!(oldObjectPool instanceof MultipleLoadBalanceObjectPool)){
+									CloseObjectPoolHeartbeatDelayed delay = new CloseObjectPoolHeartbeatDelayed(5,TimeUnit.SECONDS,oldObjectPool);
+									HeartbeatManager.addHeartbeat(delay);
+								}
+							}
+						}
+					}
+				}
+				
+				this.getConfig().addServer(sourceConfig.getName(),sourceConfig);
+			}
+		}
+	}
 }

@@ -13,6 +13,7 @@ package com.meidusa.amoeba.mysql.server;
 
 import java.io.UnsupportedEncodingException;
 import java.security.NoSuchAlgorithmException;
+import java.util.Collections;
 import java.util.Map;
 
 import org.apache.commons.collections.map.LRUMap;
@@ -25,8 +26,8 @@ import com.meidusa.amoeba.mysql.net.packet.AuthenticationPacket;
 import com.meidusa.amoeba.mysql.util.CharsetMapping;
 import com.meidusa.amoeba.mysql.util.Security;
 import com.meidusa.amoeba.net.AuthResponseData;
+import com.meidusa.amoeba.net.Authenticator;
 import com.meidusa.amoeba.net.AuthingableConnection;
-import com.meidusa.amoeba.server.DummyAuthenticator;
 import com.meidusa.amoeba.util.StringUtil;
 
 /**
@@ -34,25 +35,43 @@ import com.meidusa.amoeba.util.StringUtil;
  * @author <a href=mailto:piratebase@sina.com>Struct chen</a>
  */
 @SuppressWarnings("unchecked")
-public class MysqlClientAuthenticator extends DummyAuthenticator implements MySqlPacketConstant{
+public class MysqlClientAuthenticator extends Authenticator<AuthenticationPacket> implements MySqlPacketConstant{
 	protected static Logger logger = Logger.getLogger(MysqlClientAuthenticator.class);
-	private Map map = new LRUMap(100);
+	private Map map = Collections.synchronizedMap(new LRUMap(1000));
+	
+	protected String user;
+	protected String password;
+	
+	public String getUser() {
+		return user;
+	}
+
+	public void setUser(String user) {
+		this.user = user;
+	}
+
+	public String getPassword() {
+		return password;
+	}
+
+	public void setPassword(String password) {
+		this.password = password;
+	}
+	
 	public MysqlClientAuthenticator() {
 		
 	}
 
-	protected void processAuthentication(AuthingableConnection conn,
+	protected void processAuthentication(AuthingableConnection conn,AuthenticationPacket autheticationPacket,
 			AuthResponseData rdata) {
 		MysqlClientConnection mysqlConn = (MysqlClientConnection)conn;
 		
 		if(logger.isInfoEnabled()){
-			logger.info("Accepting request: conn=" + conn);
+			logger.info("Accepting conn=" + conn);
 		}
 		String errorMessage = "";
 
 		try{
-			AuthenticationPacket autheticationPacket = new AuthenticationPacket();
-			autheticationPacket.init(mysqlConn.getAuthenticationMessage(),conn);
 			mysqlConn.setCharset(CharsetMapping.INDEX_TO_CHARSET[autheticationPacket.charsetNumber & 0xff]);
 			boolean passwordchecked = false;
 			if(logger.isDebugEnabled()){
@@ -92,8 +111,8 @@ public class MysqlClientAuthenticator extends DummyAuthenticator implements MySq
 				return;
 			}
 
-			if(mysqlConn.getPassword() != null){
-				String encryptPassword = new String(Security.scramble411(mysqlConn.getPassword(),mysqlConn.getSeed()),AuthenticationPacket.CODE_PAGE_1252);
+			if(!StringUtil.isEmpty(getPassword())){
+				String encryptPassword = new String(Security.scramble411(getPassword(),mysqlConn.getSeed()),AuthenticationPacket.CODE_PAGE_1252);
 			
 				passwordchecked = StringUtils.equals(new String(autheticationPacket.encryptedPassword,AuthenticationPacket.CODE_PAGE_1252), encryptPassword);
 			}else{
@@ -101,7 +120,7 @@ public class MysqlClientAuthenticator extends DummyAuthenticator implements MySq
 					passwordchecked = true;
 				}
 			}
-			if(StringUtil.equals(mysqlConn.getUser(),autheticationPacket.user) && passwordchecked){
+			if(StringUtil.equals(getUser(),autheticationPacket.user) && passwordchecked){
 				rdata.code = AuthResponseData.SUCCESS;
 				if(logger.isDebugEnabled()){
 					logger.debug(autheticationPacket.toString());

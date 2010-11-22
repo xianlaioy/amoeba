@@ -38,7 +38,7 @@ public class BeanObjectEntityConfig extends ConfigEntity implements Cloneable {
 
     private String                            name;
     private String                            className;
-    private Map<String, Object>               params             = new HashMap<String, Object>();
+    private HashMap<String, Object>               params             = new HashMap<String, Object>();
 
     public String getClassName() {
         return className;
@@ -56,11 +56,11 @@ public class BeanObjectEntityConfig extends ConfigEntity implements Cloneable {
         this.name = name;
     }
 
-    public Map<String, Object> getParams() {
+    public HashMap<String, Object> getParams() {
         return params;
     }
 
-    public void setParams(Map<String, Object> params) {
+    public void setParams(HashMap<String, Object> params) {
         this.params = params;
     }
 
@@ -80,9 +80,13 @@ public class BeanObjectEntityConfig extends ConfigEntity implements Cloneable {
     }
 
     public Object createBeanObject(boolean initEarly) throws ConfigurationException {
+    	return createBeanObject(initEarly,null);
+    }
+    
+    public Object createBeanObject(boolean initEarly,Map context) throws ConfigurationException {
         try {
             Object object = reflectionProvider.newInstance(Class.forName(className));
-            ParameterMapping.mappingObject(object, getParams());
+            ParameterMapping.mappingObject(object, getParams(),context);
             if (initEarly) {
                 if (object instanceof Initialisable) {
                     ((Initialisable) object).init();
@@ -107,8 +111,9 @@ public class BeanObjectEntityConfig extends ConfigEntity implements Cloneable {
 
         entityConfig.className = this.className;
         entityConfig.name = this.name;
-        Map<String, Object> params = new HashMap<String, Object>();
-        params.putAll(this.params);
+        if(params != null){
+        	entityConfig.params = (HashMap)params.clone();
+        }
         return entityConfig;
     }
 

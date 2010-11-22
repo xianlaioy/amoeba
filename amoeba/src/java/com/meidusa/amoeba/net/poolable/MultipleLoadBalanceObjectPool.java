@@ -23,6 +23,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.pool.PoolableObjectFactory;
 
+import com.meidusa.amoeba.heartbeat.HeartbeatManager;
+import com.meidusa.amoeba.heartbeat.Status;
 import com.meidusa.amoeba.util.Initialisable;
 import com.meidusa.amoeba.util.InitialisationException;
 
@@ -38,13 +40,8 @@ import com.meidusa.amoeba.util.InitialisationException;
  * </pre>
  */
 public class MultipleLoadBalanceObjectPool implements ObjectPool,Initialisable {
-
-    public static final int LOADBALANCING_ROUNDROBIN  = 1;
-    public static final int LOADBALANCING_WEIGHTBASED = 2;
-    public static final int LOADBALANCING_HA          = 3;
-    private boolean         enable;
-    private String name;
-    public class ObjectPoolWrapper implements ObjectPool{
+	
+	public class ObjectPoolWrapper implements ObjectPool{
     	ObjectPool source;
     	public ObjectPoolWrapper(ObjectPool objectPool){
     		this.source = objectPool;
@@ -120,6 +117,14 @@ public class MultipleLoadBalanceObjectPool implements ObjectPool,Initialisable {
 		}
     	
     }
+	
+    public static final int LOADBALANCING_ROUNDROBIN  = 1;
+    public static final int LOADBALANCING_WEIGHTBASED = 2;
+    public static final int LOADBALANCING_HA          = 3;
+    private boolean         enable;
+    private String name;
+    
+    
     protected static class ActiveNumComparator implements Comparator<ObjectPool> {
 
         public int compare(ObjectPool o1, ObjectPool o2) {
@@ -139,6 +144,7 @@ public class MultipleLoadBalanceObjectPool implements ObjectPool,Initialisable {
 
     private ObjectPool[]                      runtimeObjectPools;
 
+    private int index = 0;
     private ActiveNumComparator               comparator    = new ActiveNumComparator();
 	private boolean valid;
 
@@ -187,7 +193,11 @@ public class MultipleLoadBalanceObjectPool implements ObjectPool,Initialisable {
             }
         } else if (loadbalance == LOADBALANCING_HA) {
             // HA,只要有效的pool
-            pool = poolsTemp[0];
+        	if(index < poolsTemp.length){
+        		pool = poolsTemp[index];
+        	}else{
+        		pool = poolsTemp[0];
+        	}
         } else {
             throw new Exception("poolName="+name+" loadbalance parameter error,parameter loadbalance in [1,2,3]");
         }
@@ -204,16 +214,18 @@ public class MultipleLoadBalanceObjectPool implements ObjectPool,Initialisable {
     }
 
     public void clear() throws Exception, UnsupportedOperationException {
-        for (ObjectPool pool : objectPools) {
+    	//do not clear internal pools
+    	/*for (ObjectPool pool : objectPools) {
             pool.clear();
-        }
+        }*/
 
     }
 
     public void close() throws Exception {
-        for (ObjectPool pool : objectPools) {
+    	//do not close internal pools
+        /*for (ObjectPool pool : objectPools) {
             pool.close();
-        }
+        }*/
     }
 
     public int getNumActive() throws UnsupportedOperationException {
@@ -245,10 +257,18 @@ public class MultipleLoadBalanceObjectPool implements ObjectPool,Initialisable {
     }
 
     public void setFactory(PoolableObjectFactory factory) throws IllegalStateException, UnsupportedOperationException {
-        throw new UnsupportedOperationException();
+        throw new UnsupportedOperationException("setFactory is not supported in class="+ this.getClass().getName());
     }
 
-    public boolean isEnable() {
+    public int getIndex() {
+		return index;
+	}
+
+	public void setIndex(int index) {
+		this.index = index;
+	}
+
+	public boolean isEnable() {
         return enable;
     }
 
@@ -264,17 +284,7 @@ public class MultipleLoadBalanceObjectPool implements ObjectPool,Initialisable {
 		this.valid = valid;
 	}
 
-/*	public synchronized void afterChecked(ObjectPool pool) {
-		List<ObjectPool> poolList = new ArrayList<ObjectPool>();
-		for(ObjectPool object :this.objectPools){
-			if(object.isValid()){
-				poolList.add(object);
-			}
-		}
-        runtimeObjectPools = poolList.toArray(new ObjectPool[poolList.size()]);
-	}*/
-
-	public static class MultipleHeartbeatDelayed extends HeartbeatDelayed {
+	public static class MultipleHeartbeatDelayed extends ObjectPoolHeartbeatDelayed {
 
 		public MultipleHeartbeatDelayed(long nsTime, TimeUnit timeUnit,
 				MultipleLoadBalanceObjectPool pool) {
@@ -285,19 +295,9 @@ public class MultipleLoadBalanceObjectPool implements ObjectPool,Initialisable {
 			return true;
 		}
 		
-		public STATUS doCheck() {
+		public Status doCheck() {
 			return super.doCheck();
 		}
-		/*public STATUS doCheck() {
-			MultipleLoadBalanceObjectPool mult = (MultipleLoadBalanceObjectPool)this.getPool();
-			if(mult.validate()){
-				mult.setValid(true);
-				return STATUS.VALID;
-			}else{
-				mult.setValid(false);
-				return STATUS.INVALID;
-			}
-		}*/
 	}
 
 	@Override

@@ -41,6 +41,7 @@ public abstract class Connection implements NetEventHandler {
     public static final long    PING_INTERVAL = 90 * 1000L;
     protected static final long LATENCY_GRACE = 30 * 1000L;
 
+    private final Object writeLock = new Object();
     protected ConnectionManager _cmgr;
     protected SelectionKey      _selkey;
     protected SocketChannel     _channel;
@@ -89,7 +90,9 @@ public abstract class Connection implements NetEventHandler {
      * @see <code> {@link ConnectionManager#registerConnection(Connection, int)}</code>
      */
     protected void init() {
-
+    	if(_outQueue.size()>0){
+    		_selkey.interestOps(_selkey.interestOps() | SelectionKey.OP_WRITE);
+        }
     }
 
     public void setConnectionManager(ConnectionManager cmgr) {
@@ -99,7 +102,7 @@ public abstract class Connection implements NetEventHandler {
     /**
      * 设置与 SocketChannel 相关的 SelectionKey
      */
-    public void setSelectionKey(SelectionKey selkey) {
+    public synchronized void setSelectionKey(SelectionKey selkey) {
         this._selkey = selkey;
     }
 
@@ -152,7 +155,6 @@ public abstract class Connection implements NetEventHandler {
     protected void close(Exception exception) {
             // we shouldn't be closed twice
         if (isClosed()) {
-            logger.warn("Attempted to re-close connection ["+ toString() + "]");
             return;
         }
         
@@ -188,7 +190,7 @@ public abstract class Connection implements NetEventHandler {
         }
         
         if(logger.isDebugEnabled()){
-        	logger.debug("Closing channel " + this + ".");
+        	logger.debug("Closing channel " + this + ".",exception);
         }
         try {
             _channel.close();
@@ -242,28 +244,22 @@ public abstract class Connection implements NetEventHandler {
     }
 
     public int handleEvent(long when) {
-        int bytesInTotle = 0;
+        int bytesInTotal = 0;
         try {
             if (_fin == null) {
                 _fin = createPacketInputStream();
             }
-
-            while (_channel != null && _channel.isOpen() && _fin.readPacket(_channel)) {
-                int bytesIn = 0;
+            byte[] msg = null;
+            while (_channel != null && _channel.isOpen() && (msg = _fin.readPacket(_channel)) != null) {
                 // 记录最后一次发生时间
                 _lastEvent = when;
-                /**
-                 * 得到FramedInputStream 的所有字节
-                 */
-                bytesIn = _fin.available();
-                bytesInTotle += bytesIn;
-                byte[] msg = new byte[bytesIn];
-                _fin.read(msg);
+                bytesInTotal +=msg.length;
                 doReceiveMessage(msg);
             }
         	messageProcess();
         } catch (EOFException eofe) {
             // close down the socket gracefully
+    		messageProcess();
             handleFailure(eofe);
         } catch (IOException ioe) {
             // don't log a warning for the ever-popular "the client dropped the
@@ -280,7 +276,7 @@ public abstract class Connection implements NetEventHandler {
             handleFailure(exception);
         }
 
-        return bytesInTotle;
+        return bytesInTotal;
     }
 
     
@@ -293,7 +289,7 @@ public abstract class Connection implements NetEventHandler {
     }
 
     public boolean doWrite() throws IOException {
-        synchronized (this.getSelectionKey()) {
+        synchronized (writeLock) {
             ByteBuffer buffer = null;
             int wrote = 0;
             int message = 0;
@@ -314,18 +310,21 @@ public abstract class Connection implements NetEventHandler {
 
     public void postMessage(byte[] msg) {
         PacketOutputStream _framer = getPacketOutputStream();
-        _framer.resetPacket();
-        try {
-            _framer.write(msg);
-            ByteBuffer buffer = _framer.returnPacketBuffer();
-            /*
-             * ByteBuffer out= ByteBuffer.allocate(buffer.limit()); out.put(buffer); out.flip();
-             */
-            _outQueue.append(buffer);
-            writeMessage();
-        } catch (IOException e) {
-            this._cmgr.connectionFailed(this, e);
-        }
+        ByteBuffer buffer = null;
+		synchronized (_framer) {
+	        _framer.resetPacket();
+	        try {
+	            _framer.write(msg);
+	            buffer = _framer.returnPacketBuffer();
+	        } catch (IOException e) {
+	            this._cmgr.connectionFailed(this, e);
+	            return;
+	        }
+		}
+		
+		if(buffer != null){
+			postMessage(buffer);
+		}
     }
 
     public void postMessage(ByteBuffer msg) {
@@ -342,7 +341,7 @@ public abstract class Connection implements NetEventHandler {
         }
         try {
             SelectionKey key = getSelectionKey();
-            if (!key.isValid()) {
+            if (key!= null && !key.isValid()) {
                 handleFailure(new java.nio.channels.CancelledKeyException());
                 return;
             }
@@ -351,9 +350,16 @@ public abstract class Connection implements NetEventHandler {
                  * 发送数据，如果返回false，则表示socket send buffer 已经满了。则Selector 需要监听 Writeable event
                  */
                 boolean finished = doWrite();
+                
                 if (!finished) {
                     key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
                 }
+            }else{
+            	if(key == null){
+            		if(logger.isDebugEnabled()){
+            			logger.debug("writeMessage socketId="+this.getSocketId()+" hascode="+hashCode()+" but key="+key);
+            		}
+            	}
             }
         } catch (IOException ioe) {
             handleFailure(ioe);
@@ -375,11 +381,11 @@ public abstract class Connection implements NetEventHandler {
 
     protected abstract PacketInputStream createPacketInputStream();
 
-    protected abstract PacketOutputStream createPakcetOutputStream();
+    protected abstract PacketOutputStream createPacketOutputStream();
 
     protected PacketOutputStream getPacketOutputStream() {
         if (_fout == null) {
-            _fout = createPakcetOutputStream();
+            _fout = createPacketOutputStream();
         }
         return this._fout;
 
